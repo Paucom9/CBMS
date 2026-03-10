@@ -1,0 +1,1706 @@
+---
+title: "ProtocolCBMS"
+author: "Andreu"
+date: "2025-11-19"
+output: html_document
+---
+
+
+## 1. Carrega paquets
+
+```{r setup, message=FALSE, warning=FALSE}
+# -------------------------------------------------------------------------
+# 0. Carregar paquets i funcions
+# -------------------------------------------------------------------------
+library(devtools)
+library(data.table)
+library(rbms)
+library(sf)
+library(raster)
+library(rasterVis)
+library(tmap)
+library(xlsx)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(readxl)
+library(openxlsx)
+library(lubridate)
+source("workshop_functions.R")
+
+region_bms <- c("CBMS")
+bms <- "CBMS"
+bms_id <- "CBMS"
+
+
+```
+
+## 2. CBMS_TOT
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+b_count <- read.table("./input/tables/cbms_counts.csv", sep=",", dec=".", header=TRUE)
+m_visit <- read.table("./input/tables/cbms_visits.csv",
+                      sep = ",",
+                      dec = ".",
+                      header = TRUE,
+                      fill = TRUE,
+                      comment.char = "",
+                      stringsAsFactors = FALSE)
+
+sites <- read.table("./input/tables/cbms_sites.csv", sep=";", dec=".", header=TRUE)
+
+itineraris_25 <- read_excel("input/tables/itineraris_25.xlsx")
+
+##b_countG
+
+b_countG <- b_count %>%
+  rename(
+    SITE_ID = transect_id,
+    SPECIES = species_name,
+    Count = butterfly_count
+  ) %>%
+  group_by(bms_visit_id, SITE_ID, SPECIES) %>%
+  summarise(Count = sum(Count, na.rm = TRUE)) %>%
+  ungroup()
+
+b_countG <- b_countG %>%
+  # unir només les columnes necessàries de m_visit
+  left_join(
+    m_visit %>% select(bms_visit_id, visit_date),
+    by = "bms_visit_id"
+  ) %>%
+  rename(DATE = visit_date) %>%
+  # generar noves columnes de data i bms_id
+  mutate(
+    DATE = as.Date(DATE),
+    year  = year(DATE),
+    month = month(DATE),
+    day   = day(DATE),
+    bms_id = "CBMS"
+  ) %>%
+  # eliminar la columna temporal bms_visit_id
+  select(-bms_visit_id)
+
+sum(b_count$butterfly_count)
+
+b_countG<-subset(b_countG, b_countG$SITE_ID<10000)
+
+## m_visitG
+m_visitG <- m_visit %>%
+  rename(
+    SITE_ID = transect_id,
+    DATE = visit_date
+  ) %>%
+  select(SITE_ID, DATE)
+
+
+m_visitG <- m_visitG %>%
+  mutate(
+    DATE = as.Date(DATE),        # convertir a data
+    year  = year(DATE),          # any
+    month = month(DATE),         # mes (numèric)
+    day   = day(DATE),           # dia
+    week  = isoweek(DATE),       # setmana ISO
+    bms_id = "CBMS"              # constant
+  )
+
+
+m_visitG<-subset(m_visitG, m_visitG$SITE_ID<10000)
+
+# Guardem les taules completes globals
+
+b_count_sub<- b_countG
+m_visit_sub<-m_visitG
+```
+
+## 3. SUBSET DE LA BDD DE TREBALL
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+itineraris_25$codi_oficial <- as.factor(itineraris_25$codi_oficial)
+
+itin_clim <- data.frame(SITE_ID=itineraris_25$codi_oficial, rclim=itineraris_25$rclim)
+bclim <- merge(b_countG, itin_clim, by="SITE_ID")
+mvisit <- merge(m_visitG, itin_clim, by="SITE_ID")
+
+bcount1 <- subset(bclim, rclim==1)
+bcount2 <- subset(bclim, rclim==2)
+bcount3 <- subset(bclim, rclim==3)
+
+mvisit1 <- subset(mvisit, rclim==1)
+mvisit2 <- subset(mvisit, rclim==2)
+mvisit3 <- subset(mvisit, rclim==3)
+rm(bclim, mvisit, itin_clim)
+
+
+```
+
+## 4. Funció principal
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+# Funció principal per una espècie, any i regió
+# Funció principal amb creació de carpetes i noms nets
+mi_script <- function(SPECIES, year, b_count_sub, m_visit_sub, region){
+
+  # Carreguem les dades pre-processades locals
+  m_visit <- m_visit_sub
+  m_count <- b_count_sub
+
+  # ---------------------------------------------------------------------------
+  # 1) Crear taula de dates amb estructura anual/semanal
+  ts_date <- rbms::ts_dwmy_table(
+    InitYear  = year,
+    LastYear  = 2025,
+    WeekDay1  = "monday"
+  )
+
+  # ---------------------------------------------------------------------------
+  # 2) Definir temporada de vol (març–setembre)
+  ts_season <- rbms::ts_monit_season(
+    ts_date,
+    StartMonth    = 3,
+    EndMonth      = 9,
+    StartDay      = 1,
+    CompltSeason  = TRUE,
+    Anchor        = TRUE,
+    AnchorLength  = 2,
+    AnchorLag     = 2,
+    TimeUnit      = "d"
+  )
+
+  # ---------------------------------------------------------------------------
+  # 3) Vincular visites a la temporada
+  ts_season_visit <- rbms::ts_monit_site(m_visit, ts_season)
+
+  # ---------------------------------------------------------------------------
+  # 4) Afegir comptatges de l’espècie
+  ts_season_count <- rbms::ts_monit_count_site(ts_season_visit, m_count, sp = SPECIES)
+
+  # ---------------------------------------------------------------------------
+  # 5) Estimació corba de vol
+  ts_flight_curve <- rbms::flight_curve(
+    ts_season_count,
+    NbrSample    = 500,
+    MinVisit     = 5,
+    MinOccur     = 1,
+    MinNbrSite   = 3,
+    MaxTrial     = 4,
+    GamFamily    = "nb",
+    SpeedGam     = FALSE,
+    CompltSeason = TRUE,
+    TimeUnit     = "w"
+  )
+
+  pheno <- ts_flight_curve$pheno
+
+  # ---------------------------------------------------------------------------
+  # 6) Carpeta de resultats segons regió
+  pheno_rds_dir   <- file.path("output/saved", region, "pheno/rds")
+  pheno_xlsx_dir  <- file.path("output/saved", region, "pheno/xlsx")
+  sindex_rds_dir  <- file.path("output/saved", region, "sindex/rds")
+  sindex_xlsx_dir <- file.path("output/saved", region, "sindex/xlsx")
+  trim_dir        <- file.path("output/saved", region, "trim")
+
+  dirs <- c(pheno_rds_dir, pheno_xlsx_dir, sindex_rds_dir, sindex_xlsx_dir, trim_dir)
+  for(d in dirs){
+    if(!dir.exists(d)) dir.create(d, recursive = TRUE)
+  }
+
+  # Netejar nom de l'espècie per fitxers
+  SPECIES_clean <- gsub("[^A-Za-z0-9_]", "_", SPECIES)
+
+  # ---------------------------------------------------------------------------
+  # 7) Guardar fenologia
+  saveRDS(ts_flight_curve, file.path(pheno_rds_dir, paste0(SPECIES_clean, "_pheno.rds")))
+  write.xlsx(pheno, file.path(pheno_xlsx_dir, paste0(SPECIES_clean, "_pheno.xlsx")))
+
+  # ---------------------------------------------------------------------------
+  # 8) IMPUTACIÓ I SITE INDEX
+  impt_counts <- rbms::impute_count(
+    ts_season_count = ts_season_count,
+    ts_flight_curve = pheno,
+    YearLimit = NULL,
+    TimeUnit  = "w"
+  )
+
+  sindex <- rbms::site_index(
+    butterfly_count = impt_counts,
+    MinFC = 0.10
+  )
+
+  saveRDS(sindex, file.path(sindex_rds_dir, paste0(SPECIES_clean, "_sindex.rds")))
+  write.xlsx(sindex, file.path(sindex_xlsx_dir, paste0(SPECIES_clean, "_sindex.xlsx")))
+
+  # ---------------------------------------------------------------------------
+  # 9) Neteja del site index per TRIM
+  sindex <- sindex %>%
+    group_by(SITE_ID) %>%
+    filter(any(SINDEX != 0)) %>%
+    ungroup() %>%
+    select(spp = SPECIES, site = SITE_ID, year = M_YEAR, count = SINDEX)
+
+  # ---------------------------------------------------------------------------
+  # 10) MODEL TRIM
+  a <- trimComplx(
+    counts       = sindex,
+    species      = SPECIES,
+    stratum      = "tot",
+    changepoints = "all",
+    outputFolder = "out",
+    serialcor    = FALSE
+  )
+
+  plot(overall(a[[1]]))
+
+  # ---------------------------------------------------------------------------
+  # 11) TAULA ICO
+  table <- rtrimTableICOFormat(
+    a[[1]],
+    Species_name   = SPECIES,
+    Stratum_number = "tot",
+    Year_from      = year
+  )
+
+  write.csv(table, file.path(trim_dir, paste0(SPECIES_clean, "_rtrim3.csv")),
+            row.names = FALSE)
+
+  message("Processat: ", SPECIES, " (any ", year, ") en regió ", region)
+}
+
+
+
+```
+
+## 5. Iterar als subsets climàtics
+
+La següent funció itera als diferents subsets climàtics
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+# Llista de subsets per regió
+subset_list <- list(
+  list(b_count = bcount1, m_visit = mvisit1, region = "R1"),
+  list(b_count = bcount2, m_visit = mvisit2, region = "R2"),
+  list(b_count = bcount3, m_visit = mvisit3, region = "R3")
+)
+
+# Espècies a excloure
+exclude_species <- c("HES","PIE","PAP","LYC","NYM","SAT",
+                     "hespsp","hestsp","lyclsp","nymasp","nymlsp",
+                     "nymmsp","piegsp","piepsp","pielsp","satesp",
+                     "lycags","hespci","lyccav","nymmat","nymmda",
+                     "pielre","sathlu","hespon","hessro","nymmps")
+
+# Iterem sobre cada regió
+for(s in subset_list){
+
+  b_count_sub <- s$b_count
+  m_visit_sub <- s$m_visit
+  region <- s$region
+
+  # Comptar itineraris per espècie i any dins la regió
+  count_site <- b_count_sub %>%
+    group_by(year, SPECIES) %>%
+    summarise(n_itin = n_distinct(SITE_ID), .groups = "drop")
+
+  # Només espècies amb mínim 3 itineraris
+  count_site_3 <- count_site %>%
+    filter(n_itin >= 3) %>%
+    group_by(SPECIES) %>%
+    summarise(first_year_3 = min(year)) %>%
+    filter(!SPECIES %in% exclude_species) %>%
+    filter(first_year_3 != 2024)
+
+  # Iterem sobre les espècies seleccionades
+  for(i in 1:nrow(count_site_3)){
+
+    SPECIES <- count_site_3$SPECIES[i]
+    year <- count_site_3$first_year_3[i]
+
+    # Cridem la funció principal amb tryCatch per evitar aturar tot
+    tryCatch(
+      {
+        mi_script(SPECIES, year, b_count_sub, m_visit_sub, region)
+      },
+      error = function(e){
+        message("Error amb espècie ", SPECIES, " any ", year, ": ", e$message)
+      }
+    )
+
+  }
+}
+
+```
+
+## 6. Càlcul de tendència GENERAL
+
+Combina els site_index calculats per cada subset climàtic per a fer la tendència general de les espècies
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+general_dir <- "output/saved/general"
+subfolders <- c("trim", "sindex/xlsx", "sindex/rds")
+
+for(sf in subfolders){
+  dir.create(file.path(general_dir, sf), recursive = TRUE, showWarnings = FALSE)
+}
+
+# Regions d'on llegim els sindex
+regions <- c("R1", "R2", "R3")
+
+# 1) Localitzar tots els arxius per regió
+all_sindex_files <- list()
+for(r in regions){
+  path_sindex <- file.path("output/saved", r, "sindex/xlsx")
+  all_sindex_files[[r]] <- list.files(path_sindex, pattern="_sindex.xlsx$", full.names=TRUE)
+}
+
+# 2) Llista d'espècies disponibles
+all_species <- unique(gsub("_sindex.xlsx$","",basename(unlist(all_sindex_files))))
+
+#---------------------------------------------------------
+# Funció robusta: combina els arxius d'una espècie i força tipus
+#---------------------------------------------------------
+combine_sindex_species <- function(species){
+  
+  combined <- data.frame()
+  
+  for(r in regions){
+    
+    f <- all_sindex_files[[r]][grepl(paste0("^", species, "_sindex.xlsx$"),
+                                     basename(all_sindex_files[[r]]))]
+    
+    if(length(f) > 0){
+      
+      tmp <- read.xlsx(f)
+      
+      # --- NORMALITZACIÓ DE TIPUS (solució a l'error) ---
+      colnames(tmp) <- toupper(colnames(tmp))  # assegura coincidència
+      
+      if("SPECIES" %in% names(tmp)) tmp$SPECIES <- as.character(tmp$SPECIES)
+      if("SITE_ID" %in% names(tmp)) tmp$SITE_ID <- as.character(tmp$SITE_ID)
+      if("M_YEAR"  %in% names(tmp)) tmp$M_YEAR  <- as.integer(tmp$M_YEAR)
+      if("SINDEX"  %in% names(tmp)) tmp$SINDEX  <- as.numeric(tmp$SINDEX)
+      # --------------------------------------------------
+      
+      combined <- dplyr::bind_rows(combined, tmp)
+    }
+  }
+  
+  return(combined)
+}
+
+#---------------------------------------------------------
+# 4) Procés per espècie
+#---------------------------------------------------------
+# Espècies a processar (NULL = totes)
+#species_to_run <- c("Gegenes_nostrodamus")
+#for(species in intersect(all_species, species_to_run))
+#for(species in all_species)
+  
+for(species in all_species){
+  
+  cat("\n--- Procesant espècie:", species, "---\n")
+  
+  # COMBINAR SINDEX
+  sindex_comb <- combine_sindex_species(species)
+  
+  if(nrow(sindex_comb) == 0){
+    cat("   -> Sense dades. Saltant.\n")
+    next
+  }
+  
+  # 5) Neteja EXACTA igual com abans
+sindex <- sindex_comb %>%
+  group_by(SITE_ID) %>%
+  filter(any(SINDEX != 0)) %>%
+  ungroup() %>%
+  select(
+    spp   = SPECIES,
+    site  = SITE_ID,
+    year  = M_YEAR,
+    count = SINDEX
+  ) %>%
+  filter(year >= 2001) %>%                     # 🔹 força inici 2001
+  group_by(site) %>%
+  tidyr::complete(
+    year = seq(min(year, na.rm = TRUE),
+               max(year, na.rm = TRUE),
+               by = 1),
+    fill = list(count = 0)
+  ) %>%
+  filter(any(count > 0)) %>%                    # 🔹 elimina sites buits
+  ungroup()
+
+  # Guardar combinat
+  write.xlsx(
+    sindex,
+    file.path(general_dir, "sindex/xlsx", paste0(species, "_sindex_combined.xlsx"))
+  )
+  saveRDS(
+    sindex,
+    file.path(general_dir, "sindex/rds", paste0(species, "_sindex_combined.rds"))
+  )
+  
+  cat("   -> Sindex combinat guardat.\n")
+  
+  #---------------------------------------------------------
+  # 6) MODEL TRIM
+  #---------------------------------------------------------
+  
+  tryCatch({
+    
+    a <- trimComplx(
+      counts       = sindex,
+      species      = species,
+      stratum      = "tot",
+      changepoints = "all",
+      outputFolder = "out",
+      serialcor    = FALSE
+    )
+    
+    if(class(a[[1]]) != "trim"){
+      cat("   -> TRIM no vàlid (classe incorrecta)\n")
+      next
+    }
+    
+    plot(overall(a[[1]]))
+    
+    #-----------------------------------------------------
+    # 7) TAULA ICO
+    #-----------------------------------------------------
+    table <- rtrimTableICOFormat(
+      a[[1]],
+      Species_name   = species,
+      Stratum_number = "tot",
+      Year_from      = min(sindex$year, na.rm = TRUE)
+    )
+    
+    write.csv(
+      table,
+      file.path(general_dir, "trim", paste0(species, "_rtrim3.csv")),
+      row.names = FALSE
+    )
+    
+    cat("   -> TRIM i taula ICO guardats.\n")
+    
+  }, error = function(e){
+    cat("   -> Error en TRIM: ", e$message, "\n")
+  })
+}
+
+
+
+```
+
+## 7. Càlcul de la tendència 10 years
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+# SCRIPT: recalcular TRIM 10y amb debug i suport per R1,R2,R3,general
+
+library(dplyr)
+library(readxl)
+library(openxlsx)
+library(rbms)
+library(purrr)
+library(stringr)
+
+sindex_base <- "output/saved"
+regions <- c("general","R1","R2","R3")
+out_base_10y <- file.path(sindex_base, "10y")
+
+# crear dirs 10y
+for(r in regions) {
+  dir.create(file.path(out_base_10y, r, "trim"),
+             recursive = TRUE, showWarnings = FALSE)
+}
+
+#------------------------------------------------------------
+# LLEGIR FITXERS
+#------------------------------------------------------------
+read_sindex_file <- function(path) {
+
+  ext <- tolower(tools::file_ext(path))
+
+  if(ext == "rds") {
+
+    tryCatch(readRDS(path),
+             error=function(e){
+               warning("readRDS falla: ", path, " -> ", e$message)
+               NULL
+             })
+
+  } else if(ext %in% c("xlsx","xls")) {
+
+    tryCatch(read.xlsx(path),
+             error=function(e){
+               warning("read.xlsx falla: ", path, " -> ", e$message)
+               NULL
+             })
+
+  } else if(ext == "csv") {
+
+    tryCatch(read.csv(path,
+                      check.names = FALSE,
+                      stringsAsFactors = FALSE),
+             error=function(e){
+               warning("read.csv falla: ", path, " -> ", e$message)
+               NULL
+             })
+
+  } else {
+
+    warning("Extensió no suportada:", path)
+    NULL
+  }
+}
+
+#------------------------------------------------------------
+# NORMALITZAR
+#------------------------------------------------------------
+normalize_sindex <- function(df, src_path = NA) {
+
+  if(is.null(df) || nrow(df)==0) return(NULL)
+
+  nm <- names(df)
+
+  find_col <- function(cands) {
+    x <- intersect(cands, nm)
+    if(length(x)) x[1] else NA_character_
+  }
+
+  year_col  <- find_col(c("M_YEAR","year","Year","YEAR","any","Any"))
+  count_col <- find_col(c("SINDEX","count","Count","INDEX","Index"))
+  site_col  <- find_col(c("SITE_ID","site","Site","SITE"))
+  spp_col   <- find_col(c("SPECIES","spp","Species","Species_name"))
+
+  if(is.na(year_col) || is.na(count_col) ||
+     is.na(site_col) || is.na(spp_col)) {
+
+    warning("Columnes mínimes no trobades a ", src_path)
+    return(NULL)
+  }
+
+  df %>%
+    rename(
+      year  = !!sym(year_col),
+      count = !!sym(count_col),
+      site  = !!sym(site_col),
+      spp   = !!sym(spp_col)
+    ) %>%
+    mutate(
+      year  = as.numeric(year),
+      count = as.numeric(count),
+      site  = as.character(site),
+      spp   = as.character(spp)
+    ) %>%
+    select(spp, site, year, count, everything())
+}
+
+#------------------------------------------------------------
+# PROCESSAR FITXER
+#------------------------------------------------------------
+process_sindex_file_to_10y <- function(path, region) {
+
+  tryCatch({
+
+    message(" -> llegint: ", path)
+
+    df_raw <- read_sindex_file(path)
+    if(is.null(df_raw)) {
+      return(list(ok=FALSE,
+                  species_status=list(file="read_fail")))
+    }
+
+    sindex <- normalize_sindex(df_raw, src_path = path)
+    if(is.null(sindex)) {
+      return(list(ok=FALSE,
+                  species_status=list(file="normalize_fail")))
+    }
+
+    if(!all(c("spp","site","year","count") %in% names(sindex))) {
+      return(list(ok=FALSE,
+                  species_status=list(file="missing_columns")))
+    }
+
+    species_list <- unique(sindex$spp)
+    res_list <- list()
+
+    for(sp in species_list) {
+
+      res_list[[sp]] <- tryCatch({
+
+        s_sp <- sindex %>%
+          filter(spp == sp) %>%
+          arrange(year)
+
+        anys_disponibles <- sort(unique(na.omit(s_sp$year)))
+        if(length(anys_disponibles) == 0) return("no_years")
+
+        darrers_anys <- tail(anys_disponibles, 10)
+        s_sp_10y <- s_sp %>%
+          filter(year %in% darrers_anys)
+
+        if(nrow(s_sp_10y) == 0) return("no_10y")
+
+        a <- trimComplx(
+          counts       = s_sp_10y,
+          species      = sp,
+          stratum      = "tot",
+          changepoints = "all",
+          outputFolder = "out",
+          serialcor    = FALSE
+        )
+
+        if(is.null(a) || length(a)==0 ||
+           class(a[[1]]) != "trim") {
+          return("trim_invalid")
+        }
+
+        table_ico <- rtrimTableICOFormat(
+          a[[1]],
+          Species_name   = sp,
+          Stratum_number = "tot",
+          Year_from      = min(s_sp_10y$year, na.rm=TRUE)
+        )
+
+        SPECIES_clean <- gsub("[^A-Za-z0-9_]", "_", sp)
+
+        out_file <- file.path(
+          out_base_10y,
+          region,
+          "trim",
+          paste0(SPECIES_clean, "_rtrim3_10y.csv")
+        )
+
+        write.csv(table_ico, out_file, row.names = FALSE)
+
+        message("    -> guardat TRIM 10y: ", out_file)
+
+        "ok"
+
+      }, error = function(e) {
+
+        message("    -> ERROR espècie ", sp, ": ", e$message)
+        paste0("species_error: ", e$message)
+
+      })
+    }
+
+    list(ok=TRUE, species_status=res_list)
+
+  }, error = function(e) {
+
+    message("ERROR FATAL fitxer ", path, ": ", e$message)
+
+    list(ok=FALSE,
+         species_status=list(file=paste0("fatal_error: ", e$message)))
+  })
+}
+
+#------------------------------------------------------------
+# LOOP PER REGIÓ
+#------------------------------------------------------------
+log_entries <- list()
+
+for(r in regions) {
+
+  message("REGIÓ: ", r)
+
+  candidate_dirs <- c(
+    file.path(sindex_base, r, "sindex", "rds"),
+    file.path(sindex_base, r, "sindex", "xlsx"),
+    file.path(sindex_base, r, "sindex", "csv"),
+    file.path(sindex_base, r, "sindex")
+  )
+
+  files_found <- character(0)
+
+  for(dirc in candidate_dirs) {
+    if(dir.exists(dirc)) {
+      fl <- list.files(dirc,
+                       pattern="\\.(rds|xlsx|xls|csv)$",
+                       full.names=TRUE,
+                       ignore.case=TRUE)
+      files_found <- c(files_found, fl)
+    }
+  }
+
+  files_found <- unique(files_found)
+
+  message("  -> arxius trobats: ", length(files_found))
+
+  if(length(files_found)==0) {
+
+    log_entries[[length(log_entries)+1]] <-
+      data.frame(region=r,
+                 file=NA,
+                 species=NA,
+                 status="no_files",
+                 stringsAsFactors=FALSE)
+
+    next
+  }
+
+  for(f in files_found) {
+
+    res <- process_sindex_file_to_10y(f, r)
+
+    if(is.list(res) && "species_status" %in% names(res)) {
+
+      for(sp in names(res$species_status)) {
+
+        status_val <- res$species_status[[sp]]
+        if(is.null(status_val) || length(status_val)==0)
+          status_val <- "unknown_error"
+
+        log_entries[[length(log_entries)+1]] <-
+          data.frame(region=r,
+                     file=basename(f),
+                     species=sp,
+                     status=status_val,
+                     stringsAsFactors=FALSE)
+      }
+
+    } else {
+
+      log_entries[[length(log_entries)+1]] <-
+        data.frame(region=r,
+                   file=basename(f),
+                   species=NA,
+                   status="unexpected_return",
+                   stringsAsFactors=FALSE)
+    }
+  }
+}
+
+#------------------------------------------------------------
+# GUARDAR LOG
+#------------------------------------------------------------
+log_df <- bind_rows(log_entries)
+
+write.csv(log_df,
+          file.path(out_base_10y, "trim_10y_log.csv"),
+          row.names=FALSE)
+
+message("PROCÉS FINALITZAT")
+
+
+```
+
+## 8. ALTRES SUBSETS
+
+Script que fa una funció per fer el càlcul de la tendència a partir d'un subset de dades, sense tenir en compte les regions climàtiques
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+library(dplyr)
+library(openxlsx)
+library(rbms)
+
+# ============================================================
+# SCRIPT GENERAL PER CALCULAR TENDÈNCIES D’UN SUBSET DE SITE_ID
+# ============================================================
+
+run_subset_pipeline <- function(subset_name, site_list) {
+  
+  message("\n===================================================")
+  message(" PROCESSANT SUBSET: ", subset_name)
+  message("===================================================\n")
+  
+  # ---------------------------------------------------------
+  # 0) CREAR DIRECTORIS
+  # ---------------------------------------------------------
+  
+  subset_dir <- file.path("output/saved/subsets", subset_name)
+  subfolders <- c("trim", "sindex/xlsx", "sindex/rds")
+  
+  for(sf in subfolders){
+    dir.create(file.path(subset_dir, sf), recursive = TRUE, showWarnings = FALSE)
+  }
+  
+  # ---------------------------------------------------------
+  # 1) LOCALITZAR SINDEX PER REGIONS
+  # ---------------------------------------------------------
+  
+  regions <- c("R1", "R2", "R3")
+  all_sindex_files <- list()
+  
+  for(r in regions){
+    path_sindex <- file.path("output/saved", r, "sindex/xlsx")
+    files <- list.files(path_sindex, pattern = "_sindex.xlsx$", full.names = TRUE)
+    all_sindex_files[[r]] <- files
+  }
+  
+  all_species <- unique(gsub("_sindex.xlsx$", "", basename(unlist(all_sindex_files))))
+  
+  message("Espècies trobades: ", length(all_species), "\n")
+  
+  # ---------------------------------------------------------
+  # 2) FUNCIÓ ROBUSTA: COMBINAR SINDEX DEL SUBSET
+  # ---------------------------------------------------------
+  
+  combine_sindex_subset <- function(species){
+    
+    combined <- list()   # IMPORTANT → llista en comptes de data.frame()
+    
+    for(r in regions){
+      
+      f <- all_sindex_files[[r]][grepl(
+        paste0("^", species, "_sindex.xlsx$"),
+        basename(all_sindex_files[[r]])
+      )]
+      
+      if(length(f) == 0) next
+      
+      # Llegir l’Excel
+      d <- read.xlsx(f)
+      
+      # Forçar tipus correctes
+      d$SPECIES <- as.character(d$SPECIES)
+      d$SITE_ID <- as.character(d$SITE_ID)
+      
+      # Filtrar només els SITE_ID del subset
+      d <- d %>% filter(SITE_ID %in% site_list)
+      
+      combined[[length(combined) + 1]] <- d
+    }
+    
+    # Convertir en data.frame final
+    if(length(combined) == 0) return(data.frame())
+    
+    return(bind_rows(combined))
+  }
+  
+  # ---------------------------------------------------------
+  # 3) BUCLE PRINCIPAL PER ESPÈCIES
+  # ---------------------------------------------------------
+  
+  for(species in all_species){
+    
+    message("\n--- Procesant espècie: ", species, " ---")
+    
+    sindex_comb <- combine_sindex_subset(species)
+    
+    if(nrow(sindex_comb) == 0){
+      message("   -> Sense dades per al subset. Saltant.")
+      next
+    }
+    
+    # -----------------------------------------------------
+    # 4) NETEJA EXACTAMENT COM HAS FET ABANS
+    # -----------------------------------------------------
+    
+    sindex <- sindex_comb %>%
+      group_by(SITE_ID) %>%
+      filter(any(SINDEX != 0)) %>%   # eliminar itineraris totalment zero
+      ungroup() %>%
+      select(
+        spp   = SPECIES,
+        site  = SITE_ID,
+        year  = M_YEAR,
+        count = SINDEX
+      )
+    
+    # -----------------------------------------------------
+    # 5) GUARDAR SINDEX COMBINAT
+    # -----------------------------------------------------
+    
+    write.xlsx(
+      sindex,
+      file.path(subset_dir, "sindex/xlsx", paste0(species, "_sindex_subset.xlsx")),
+      row.names = FALSE
+    )
+    
+    saveRDS(
+      sindex,
+      file.path(subset_dir, "sindex/rds", paste0(species, "_sindex_subset.rds"))
+    )
+    
+    message("   -> Sindex del subset guardat.")
+    
+    # -----------------------------------------------------
+    # 6) EXECUTAR TRIM
+    # -----------------------------------------------------
+    
+    tryCatch({
+      
+      a <- trimComplx(
+        counts       = sindex,
+        species      = species,
+        stratum      = "tot",
+        changepoints = "all",
+        serialcor    = FALSE,
+        outputFolder = "out"
+      )
+      
+      if(class(a[[1]]) != "trim"){
+        message("   -> TRIM no vàlid (classe incorrecta)")
+        next
+      }
+      
+      # ---------------------------------------------------
+      # 7) TAULA ICO
+      # ---------------------------------------------------
+      
+      table <- rtrimTableICOFormat(
+        a[[1]],
+        Species_name   = species,
+        Stratum_number = "tot",
+        Year_from      = min(sindex$year, na.rm = TRUE)
+      )
+      
+      write.csv(
+        table,
+        file.path(subset_dir, "trim", paste0(species, "_rtrim3.csv")),
+        row.names = FALSE
+      )
+      
+      message("   -> TRIM i taula ICO guardats.")
+      
+    }, error = function(e){
+      message("   -> Error en TRIM: ", e$message)
+    })
+    
+  }
+  
+  message("\n✔ SUBSET FINALITZAT: ", subset_name, "\n")
+}
+# ============================================================
+# EXEMPLE D’ÚS AMB EL TEU SUBSET DIBA
+# ============================================================
+
+diba_sites <- c(
+  "8", "11","12","13","19","20","21","24","26","28","33","34,", "36","45", "53","68","69",
+  "80","88","89","95","106","107","108","110","112","147","160","161","192","234","239","246","251","253"
+)
+
+rmb_sites <- c(
+"10","27","29","31","32","34","35","37","45","49","65","75","76","78","83","104","114","119","120","122","128","129","135","147","148","149","150","157","159","174","175","178","179","184","191","196","213","223","226", "230", "233", "234", "237", "238", "239","246", "251", "253"
+)
+
+balears<-c("60","61","74", "101", "145", "146", "180", "182", "186","187","204","155", "169", "170", "171", "172", "173","183", "185", "188", "202", "203", "206", "222", "225", "259", "260")
+
+
+voriental_sites <- itineraris_25$codi_oficial[itineraris_25$comarca == "Vallès Oriental"]
+
+run_subset_pipeline("diba",diba_sites )
+
+
+
+```
+
+
+## 9. Protocol antic Versió RBMS 
+
+Serveix per obtenir fitxers rds, que després s'inclouen en el càlcul dels MSI tipus GBI com ho hem fet fins ara
+
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+# script complet integrat: combinació sindex + RBMS (collated index, bootstrap, trends, CI)
+
+library(stringr)
+
+# Carpeta on s'han anat guardant els resultats
+results_dir <- "output/saved/general/rbms/co_index"
+
+# Espècies ja processades (noms basats en els fitxers existents)
+done_species <- list.files(results_dir, pattern = "_coindex.xlsx$", full.names = FALSE)
+
+# Traiem el sufix del fitxer
+done_species <- gsub("_coindex.xlsx$", "", done_species)
+
+# Llista d'espècies pendents
+pending_species <- setdiff(all_species, done_species)
+
+cat("\nEspècies processades:", length(done_species), "\n")
+print(done_species)
+
+cat("\nEspècies pendents:", length(pending_species), "\n")
+print(pending_species)
+
+
+
+library(openxlsx)
+library(data.table)
+library(dplyr)
+library(rbms)
+
+#---------------------------------------------------------
+# DIRECTORIS
+#---------------------------------------------------------
+general_dir <- "output/saved/general"
+subfolders <- c("sindex/xlsx", "sindex/rds", "rbms/co_index", "rbms/boot")
+for(sf in subfolders){
+  dir.create(file.path(general_dir, sf), recursive = TRUE, showWarnings = FALSE)
+}
+
+# Regions i arxius
+regions <- c("R1", "R2", "R3")
+all_sindex_files <- list()
+for(r in regions){
+  path_sindex <- file.path("output/saved", r, "sindex/xlsx")
+  all_sindex_files[[r]] <- list.files(path_sindex, pattern="_sindex.xlsx$", full.names=TRUE)
+}
+
+all_species <- unique(gsub("_sindex.xlsx$","",basename(unlist(all_sindex_files))))
+
+#---------------------------------------------------------
+# FUNCIO PER COMBINAR SINDEX
+#---------------------------------------------------------
+combine_sindex_species <- function(species){
+  combined <- data.frame()
+  for(r in regions){
+    f <- all_sindex_files[[r]][grepl(paste0("^", species, "_sindex.xlsx$"),
+                                     basename(all_sindex_files[[r]]))]
+    if(length(f) > 0){
+      tmp <- read.xlsx(f)
+      colnames(tmp) <- toupper(colnames(tmp))
+      if("SPECIES" %in% names(tmp)) tmp$SPECIES <- as.character(tmp$SPECIES)
+      if("SITE_ID" %in% names(tmp)) tmp$SITE_ID <- as.character(tmp$SITE_ID)
+      if("M_YEAR"  %in% names(tmp)) tmp$M_YEAR  <- as.integer(tmp$M_YEAR)
+      if("SINDEX"  %in% names(tmp)) tmp$SINDEX  <- as.numeric(tmp$SINDEX)
+      if("TOTAL_NM" %in% names(tmp)) tmp$TOTAL_NM <- as.numeric(tmp$TOTAL_NM)
+      combined <- dplyr::bind_rows(combined, tmp)
+    }
+  }
+  return(combined)
+}
+
+#---------------------------------------------------------
+# BUCLE PER ESPÈCIE
+#---------------------------------------------------------
+for(species in pending_species){
+
+  cat("\n--- Processant espècie:", species, "---\n")
+
+  sindex_comb <- combine_sindex_species(species)
+  if(nrow(sindex_comb) == 0){
+    cat("   -> Sense dades. Saltant.\n")
+    next
+  }
+
+  # Neteja i format
+  sindex <- sindex_comb %>%
+    group_by(SITE_ID) %>%
+    filter(any(SINDEX != 0)) %>%
+    ungroup() %>%
+    select(SPECIES = SPECIES, SITE_ID, M_YEAR, SINDEX, TOTAL_NM) %>%
+    as.data.table()
+
+  if(nrow(sindex) == 0){
+    cat("   -> Tot zero després de filtrar. Saltant.\n")
+    next
+  }
+
+  # Guardar combinat
+  write.xlsx(
+    sindex,
+    file.path(general_dir, "sindex/xlsx", paste0(species, "_sindex_combined.xlsx"))
+  )
+  saveRDS(
+    sindex,
+    file.path(general_dir, "sindex/rds", paste0(species, "_sindex_combined.rds"))
+  )
+  cat("   -> Sindex combinat guardat.\n")
+
+  #---------------------------------------------------------
+  # Normalitzar nom espècie per RBMS (espais en comptes de _)
+  #---------------------------------------------------------
+  species_clean <- gsub("_", " ", species)
+
+  # Check coincidència amb sindex
+  if(!species_clean %in% unique(sindex$SPECIES)){
+    cat("   -> Espècie no trobada al sindex_comb. Saltant.\n")
+    next
+  }
+
+  # Check suficients dades
+  if(all(sindex$TOTAL_NM <= 0) | all(sindex$SINDEX <= 0) | length(unique(sindex$M_YEAR)) < 2){
+    cat("   -> Dades insuficients per collated_index. Saltant.\n")
+    next
+  }
+
+  #---------------------------------------------------------
+  # RBMS: COLLATED INDEX
+  #---------------------------------------------------------
+  cat("-> Calculant collated_index...\n")
+  co_index <- rbms::collated_index(
+    data = sindex,
+    s_sp = species_clean,
+    sindex_value = "SINDEX",
+    glm_weights = TRUE,
+    rm_zero = TRUE
+  )
+
+  ci <- co_index$col_index
+  ci$SPECIES <- species_clean
+
+  write.xlsx(
+    ci,
+    file.path(general_dir, "rbms/co_index", paste0(species, "_coindex.xlsx"))
+  )
+  cat("   -> Co_index guardat, files:", nrow(ci), "\n")
+
+  #---------------------------------------------------------
+  # RBMS: BOOTSTRAP (producció = 500 replicacions)
+  #---------------------------------------------------------
+  cat("-> Calculant bootstrap (500 replicacions)...\n")
+  bootsample <- rbms::boot_sample(sindex, boot_n = 500)
+
+  co_list <- list()
+  pb <- txtProgressBar(min = 0, max = nrow(bootsample$boot_ind), style = 3)
+
+  for(i in c(0, seq_len(nrow(bootsample$boot_ind)))){
+    tmp <- rbms::collated_index(
+      data = sindex,
+      s_sp = species_clean,
+      sindex_value = "SINDEX",
+      bootID = i,
+      boot_ind = bootsample,
+      glm_weights = TRUE,
+      rm_zero = TRUE
+    )
+    co_list[[i + 1]] <- tmp$col_index
+    setTxtProgressBar(pb, i)
+  }
+
+  co_boot <- rbindlist(co_list, fill = TRUE)
+  co_boot$SPECIES <- species_clean
+
+  saveRDS(
+    co_boot,
+    file.path(general_dir, "rbms/boot", paste0(species, "_co_boot.rds"))
+  )
+  cat("   -> Bootstrap guardat, files:", nrow(co_boot), "\n")
+}
+
+
+
+
+
+library(openxlsx)
+library(data.table)
+library(dplyr)
+library(rbms)
+
+cat("\n========================\n")
+cat(" TEST RBMS PER UNA ESPÈCIE\n")
+cat("========================\n\n")
+
+#---------------------------------------------------------
+# 0) CONFIGURACIÓ
+#---------------------------------------------------------
+
+SPECIES_TEST <- "Papilio machaon"   # <-- NOM EXACTE DEL FITXER: Papilio_machaon_sindex.xlsx
+regions <- c("R1", "R2", "R3")
+
+input_root <- "output/saved"
+output_root <- "output/test_rbms"
+
+dir.create(output_root, recursive = TRUE, showWarnings = FALSE)
+
+#---------------------------------------------------------
+# 1) LOCALITZAR TOTS ELS SINDEX PER REGIÓ (igual que el teu script)
+#---------------------------------------------------------
+
+all_sindex_files <- list()
+
+for(r in regions){
+  path_sindex <- file.path(input_root, r, "sindex/xlsx")
+  all_sindex_files[[r]] <- list.files(
+    path_sindex,
+    pattern = "_sindex.xlsx$",
+    full.names = TRUE
+  )
+}
+
+#---------------------------------------------------------
+# 2) COMBINAR EL SINDEX PER 1 ESPÈCIE (igual que combine_sindex_species)
+#---------------------------------------------------------
+
+combine_sindex_species <- function(species){
+
+  combined <- data.frame()
+
+  for(r in regions){
+
+    f <- all_sindex_files[[r]][
+      grepl(paste0("^", species, "_sindex.xlsx$"),
+            basename(all_sindex_files[[r]]))
+    ]
+
+    if(length(f) > 0){
+
+      tmp <- read.xlsx(f)
+
+      # Normalització tal com ho feies
+      colnames(tmp) <- toupper(colnames(tmp))
+
+      if("SPECIES" %in% names(tmp)) tmp$SPECIES <- as.character(tmp$SPECIES)
+      if("SITE_ID" %in% names(tmp)) tmp$SITE_ID <- as.character(tmp$SITE_ID)
+      if("M_YEAR"  %in% names(tmp)) tmp$M_YEAR  <- as.integer(tmp$M_YEAR)
+      if("SINDEX"  %in% names(tmp)) tmp$SINDEX  <- as.numeric(tmp$SINDEX)
+
+      combined <- dplyr::bind_rows(combined, tmp)
+    }
+  }
+
+  return(combined)
+}
+
+cat("-> Combinant SINDEX per l’espècie:", SPECIES_TEST, "\n")
+
+sindex_comb <- combine_sindex_species(SPECIES_TEST)
+
+cat("   Files totals SINDEX combinat:", nrow(sindex_comb), "\n")
+
+if(nrow(sindex_comb) == 0){
+  stop("❌ ERROR: L'espècie no té cap .xlsx a R1/R2/R3")
+}
+
+#---------------------------------------------------------
+# 3) FORMATEJAR COM AL PRIMER SCRIPT
+#---------------------------------------------------------
+
+sindex <- sindex_comb %>%
+  group_by(SITE_ID) %>%
+  filter(any(SINDEX != 0)) %>%
+  ungroup() %>%
+  select(
+    SPECIES = SPECIES,
+    SITE_ID = SITE_ID,
+    M_YEAR  = M_YEAR,
+    SINDEX  = SINDEX,
+    TOTAL_NM = TOTAL_NM    # <-- AFEGIT
+  ) %>%
+  as.data.table()
+
+cat("   Files després de neteja:", nrow(sindex), "\n")
+
+#---------------------------------------------------------
+# 4) CARPETA DE SORTIDA RBMS
+#---------------------------------------------------------
+
+dir.create(file.path(output_root, "co_index"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(output_root, "boot"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(output_root, "trends"), recursive = TRUE, showWarnings = FALSE)
+
+#---------------------------------------------------------
+# 5) RBMS: COLLATED INDEX
+#---------------------------------------------------------
+
+cat("\n-> Calculant collated_index…\n")
+
+co_index <- rbms::collated_index(
+  data = sindex,
+  s_sp = SPECIES_TEST,
+  sindex_value = "SINDEX",
+  glm_weights = TRUE,
+  rm_zero = TRUE
+)
+
+ci <- co_index$col_index
+ci$SPECIES <- SPECIES_TEST
+
+cat("   Files col_index:", nrow(ci), "\n")
+print(head(ci))
+
+write.xlsx(
+  ci,
+  file.path(output_root, "co_index",
+            paste0(SPECIES_TEST, "_coindex.xlsx"))
+)
+
+#---------------------------------------------------------
+# 6) RBMS: BOOTSTRAP (50 replicacions per test)
+#---------------------------------------------------------
+
+cat("\n-> Bootstrap (50 replicacions)…\n")
+
+bootsample <- rbms::boot_sample(sindex, boot_n = 50)
+
+co_list <- list()
+
+pb <- txtProgressBar(min = 0, max = nrow(bootsample$boot_ind), style = 3)
+
+for(i in c(0, seq_len(nrow(bootsample$boot_ind)))){
+
+  tmp <- rbms::collated_index(
+    data = sindex,
+    s_sp = SPECIES_TEST,
+    sindex_value = "SINDEX",
+    bootID = i,
+    boot_ind = bootsample,
+    glm_weights = TRUE,
+    rm_zero = TRUE
+  )
+
+  co_list[[i + 1]] <- tmp$col_index
+  setTxtProgressBar(pb, i)
+}
+
+co_boot <- rbindlist(co_list, fill = TRUE)
+co_boot$SPECIES <- SPECIES_TEST
+
+cat("\n   Files bootstrap:", nrow(co_boot), "\n")
+
+saveRDS(
+  co_boot,
+  file.path(output_root, "boot",
+            paste0(SPECIES_TEST, "_co_boot.rds"))
+)
+
+
+```
+
+
+# 10. PROTOCOL ANTIC RBMS PER SUBSET D’ITINERARIS
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+library(dplyr)
+library(openxlsx)
+library(data.table)
+library(rbms)
+
+run_rbms_subset <- function(subset_name, site_list, boot_n = 500){
+
+  message("\n===================================================")
+  message(" RBMS SUBSET: ", subset_name)
+  message("===================================================\n")
+
+  #---------------------------------------------------------
+  # DIRECTORIS
+  #---------------------------------------------------------
+  subset_dir <- file.path("output/saved/subsets", subset_name, "rbms")
+  subfolders <- c("sindex/xlsx", "sindex/rds", "co_index", "boot")
+
+  for(sf in subfolders){
+    dir.create(file.path(subset_dir, sf), recursive = TRUE, showWarnings = FALSE)
+  }
+
+  #---------------------------------------------------------
+  # REGIONS I SINDEX
+  #---------------------------------------------------------
+  regions <- c("R1", "R2", "R3")
+  all_sindex_files <- list()
+
+  for(r in regions){
+    path_sindex <- file.path("output/saved", r, "sindex/xlsx")
+    all_sindex_files[[r]] <- list.files(
+      path_sindex,
+      pattern = "_sindex.xlsx$",
+      full.names = TRUE
+    )
+  }
+
+  all_species <- unique(gsub("_sindex.xlsx$", "",
+                             basename(unlist(all_sindex_files))))
+
+  message("Espècies trobades: ", length(all_species), "\n")
+
+  #---------------------------------------------------------
+  # FUNCIÓ COMBINAR SINDEX + SUBSET
+  #---------------------------------------------------------
+  combine_sindex_subset <- function(species){
+
+    combined <- list()
+
+    for(r in regions){
+
+      f <- all_sindex_files[[r]][
+        grepl(paste0("^", species, "_sindex.xlsx$"),
+              basename(all_sindex_files[[r]]))
+      ]
+
+      if(length(f) == 0) next
+
+      tmp <- read.xlsx(f)
+      colnames(tmp) <- toupper(colnames(tmp))
+
+      tmp$SPECIES  <- as.character(tmp$SPECIES)
+      tmp$SITE_ID  <- as.character(tmp$SITE_ID)
+      tmp$M_YEAR   <- as.integer(tmp$M_YEAR)
+      tmp$SINDEX   <- as.numeric(tmp$SINDEX)
+      if("TOTAL_NM" %in% names(tmp))
+        tmp$TOTAL_NM <- as.numeric(tmp$TOTAL_NM)
+
+      # 🔴 SUBSET AQUÍ
+      tmp <- tmp %>% filter(SITE_ID %in% site_list)
+
+      combined[[length(combined) + 1]] <- tmp
+    }
+
+    if(length(combined) == 0) return(data.frame())
+    bind_rows(combined)
+  }
+
+  #---------------------------------------------------------
+  # BUCLE PRINCIPAL PER ESPÈCIE
+  #---------------------------------------------------------
+  for(species in all_species){
+
+    message("\n--- Processant espècie: ", species)
+
+    sindex_comb <- combine_sindex_subset(species)
+
+    if(nrow(sindex_comb) == 0){
+      message("   -> Sense dades al subset. Saltant.")
+      next
+    }
+
+    # Neteja exactament com al protocol antic
+    sindex <- sindex_comb %>%
+      group_by(SITE_ID) %>%
+      filter(any(SINDEX != 0)) %>%
+      ungroup() %>%
+      select(SPECIES, SITE_ID, M_YEAR, SINDEX, TOTAL_NM) %>%
+      as.data.table()
+
+    if(nrow(sindex) == 0){
+      message("   -> Tot zero després de filtrar. Saltant.")
+      next
+    }
+
+    # Guardar SINDEX
+    write.xlsx(
+      sindex,
+      file.path(subset_dir, "sindex/xlsx",
+                paste0(species, "_sindex_subset.xlsx"))
+    )
+
+    saveRDS(
+      sindex,
+      file.path(subset_dir, "sindex/rds",
+                paste0(species, "_sindex_subset.rds"))
+    )
+
+    #---------------------------------------------------------
+    # RBMS
+    #---------------------------------------------------------
+    species_clean <- gsub("_", " ", species)
+
+    if(!species_clean %in% unique(sindex$SPECIES)){
+      message("   -> Nom espècie no coincideix. Saltant.")
+      next
+    }
+
+    if(all(sindex$SINDEX <= 0) | length(unique(sindex$M_YEAR)) < 2){
+      message("   -> Dades insuficients per RBMS. Saltant.")
+      next
+    }
+
+    # COLLATED INDEX
+    message("   -> Calculant collated_index")
+
+    co_index <- rbms::collated_index(
+      data = sindex,
+      s_sp = species_clean,
+      sindex_value = "SINDEX",
+      glm_weights = TRUE,
+      rm_zero = TRUE
+    )
+
+    ci <- co_index$col_index
+    ci$SPECIES <- species_clean
+
+    write.xlsx(
+      ci,
+      file.path(subset_dir, "co_index",
+                paste0(species, "_coindex.xlsx"))
+    )
+
+    # BOOTSTRAP
+    message("   -> Bootstrap (", boot_n, " replicacions)")
+
+    bootsample <- rbms::boot_sample(sindex, boot_n = boot_n)
+
+    co_list <- list()
+    pb <- txtProgressBar(min = 0,
+                         max = nrow(bootsample$boot_ind),
+                         style = 3)
+
+    for(i in c(0, seq_len(nrow(bootsample$boot_ind)))){
+
+      tmp <- rbms::collated_index(
+        data = sindex,
+        s_sp = species_clean,
+        sindex_value = "SINDEX",
+        bootID = i,
+        boot_ind = bootsample,
+        glm_weights = TRUE,
+        rm_zero = TRUE
+      )
+
+      co_list[[i + 1]] <- tmp$col_index
+      setTxtProgressBar(pb, i)
+    }
+
+    co_boot <- rbindlist(co_list, fill = TRUE)
+    co_boot$SPECIES <- species_clean
+
+    saveRDS(
+      co_boot,
+      file.path(subset_dir, "boot",
+                paste0(species, "_co_boot.rds"))
+    )
+
+    message("   -> RBMS completat.")
+  }
+
+  message("\n✔ RBMS SUBSET FINALITZAT: ", subset_name, "\n")
+}
+
+
+
+diba_sites <- c(
+  "8", "11","12","13","19","20","21","24","26","28","33","34,", "36","45", "53","68","69",
+  "80","88","89","95","106","107","108","110","112","147","160","161","192","234","239","246","251","253"
+)
+
+
+run_rbms_subset("diba", diba_sites)
+
+
+```
+## 11. SUBSET per 10 anys
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+run_subset_pipeline_10y <- function(subset_name, site_list) {
+  
+  message("\n===================================================")
+  message(" PROCESSANT SUBSET (10 anys): ", subset_name)
+  message("===================================================\n")
+  
+  # ---------------------------------------------------------
+  # 0) CREAR DIRECTORIS
+  # ---------------------------------------------------------
+  subset_dir <- file.path("output/saved/subsets", paste0(subset_name,"_10y"))
+  subfolders <- c("trim", "sindex/xlsx", "sindex/rds")
+  for(sf in subfolders){
+    dir.create(file.path(subset_dir, sf), recursive = TRUE, showWarnings = FALSE)
+  }
+  
+  # ---------------------------------------------------------
+  # 1) LOCALITZAR SINDEX PER REGIONS
+  # ---------------------------------------------------------
+  regions <- c("R1", "R2", "R3")
+  all_sindex_files <- list()
+  for(r in regions){
+    path_sindex <- file.path("output/saved", r, "sindex/xlsx")
+    files <- list.files(path_sindex, pattern = "_sindex.xlsx$", full.names = TRUE)
+    all_sindex_files[[r]] <- files
+  }
+  all_species <- unique(gsub("_sindex.xlsx$", "", basename(unlist(all_sindex_files))))
+  message("Espècies trobades: ", length(all_species), "\n")
+  
+  # ---------------------------------------------------------
+  # 2) FUNCIÓ COMBINAR SINDEX DEL SUBSET
+  # ---------------------------------------------------------
+  combine_sindex_subset <- function(species){
+    combined <- list()
+    for(r in regions){
+      f <- all_sindex_files[[r]][grepl(
+        paste0("^", species, "_sindex.xlsx$"),
+        basename(all_sindex_files[[r]])
+      )]
+      if(length(f) == 0) next
+      d <- read.xlsx(f)
+      d$SPECIES <- as.character(d$SPECIES)
+      d$SITE_ID <- as.character(d$SITE_ID)
+      # Filtrar pel subset de SITE_ID
+      d <- d %>% filter(SITE_ID %in% site_list)
+      # Filtrar els darrers 10 anys automàticament
+      max_year <- max(d$M_YEAR, na.rm = TRUE)
+      min_year <- max_year - 9
+      d <- d %>% filter(M_YEAR >= min_year & M_YEAR <= max_year)
+      combined[[length(combined) + 1]] <- d
+    }
+    if(length(combined) == 0) return(data.frame())
+    return(bind_rows(combined))
+  }
+  
+  # ---------------------------------------------------------
+  # 3) BUCLE PER ESPÈCIES
+  # ---------------------------------------------------------
+  for(species in all_species){
+    message("\n--- Procesant espècie: ", species, " ---")
+    
+    sindex_comb <- combine_sindex_subset(species)
+    if(nrow(sindex_comb) == 0){
+      message("   -> Sense dades per al subset. Saltant.")
+      next
+    }
+    
+    # -----------------------------------------------------
+    # 4) NETEJA
+    # -----------------------------------------------------
+    sindex <- sindex_comb %>%
+      group_by(SITE_ID) %>%
+      filter(any(SINDEX != 0)) %>%   
+      ungroup() %>%
+      select(
+        spp   = SPECIES,
+        site  = SITE_ID,
+        year  = M_YEAR,
+        count = SINDEX
+      )
+    
+    # -----------------------------------------------------
+    # 5) GUARDAR SINDEX COMBINAT
+    # -----------------------------------------------------
+    write.xlsx(
+      sindex,
+      file.path(subset_dir, "sindex/xlsx", paste0(species, "_sindex_subset.xlsx")),
+      row.names = FALSE
+    )
+    saveRDS(
+      sindex,
+      file.path(subset_dir, "sindex/rds", paste0(species, "_sindex_subset.rds"))
+    )
+    message("   -> Sindex del subset guardat.")
+    
+    # -----------------------------------------------------
+    # 6) EXECUTAR TRIM
+    # -----------------------------------------------------
+    tryCatch({
+      a <- trimComplx(
+        counts       = sindex,
+        species      = species,
+        stratum      = "tot",
+        changepoints = "all",
+        serialcor    = FALSE,
+        outputFolder = "out"
+      )
+      if(class(a[[1]]) != "trim"){
+        message("   -> TRIM no vàlid (classe incorrecta)")
+        next
+      }
+      # ---------------------------------------------------
+      # 7) TAULA ICO
+      # ---------------------------------------------------
+      table <- rtrimTableICOFormat(
+        a[[1]],
+        Species_name   = species,
+        Stratum_number = "tot",
+        Year_from      = min(sindex$year, na.rm = TRUE)
+      )
+      write.csv(
+        table,
+        file.path(subset_dir, "trim", paste0(species, "_rtrim3.csv")),
+        row.names = FALSE
+      )
+      message("   -> TRIM i taula ICO guardats.")
+    }, error = function(e){
+      message("   -> Error en TRIM: ", e$message)
+    })
+  }
+  
+  message("\n✔ SUBSET FINALITZAT (10 anys): ", subset_name, "\n")
+}
+
+
+run_subset_pipeline_10y("balears",balears )
+
+```
+

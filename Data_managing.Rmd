@@ -1,0 +1,1298 @@
+---
+title: "Data managing"
+author: "Ubach, A."
+output: word_document
+always_allow_html: true
+---
+
+## 1. Compilat de taules
+
+El paquet rbms treu resultats espècie per espècie de manera que posteriorment s'han de compilar en taules que els agrupin. El següent codi compila els arxius excel generats en un de sol.
+
+Primer de tot haurem separat els resultats obtinguts en carpetes segons la regió climàtica per a no liar-los
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+library(devtools)
+library(data.table)
+library(rbms)
+library(sf)
+library(raster)
+library(rasterVis)
+library(tmap)
+library(xlsx)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(readxl)
+library(openxlsx)
+library(tidyverse)
+source("workshop_functions.R")
+library(readxl)
+```
+
+
+## 2. COMPILAR FENOLOGIA
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+library(readxl)
+library(dplyr)
+library(purrr)
+library(stringr)
+
+regions <- c("R1", "R2", "R3")
+
+# Funció per llegir tots els Excel d'una regió i afegir columna rclim
+read_pheno_region <- function(region){
+  
+  folder <- file.path("output/saved", region, "pheno/xlsx")
+  
+  if(!dir.exists(folder)){
+    cat("Carpeta no trobada:", folder, "\n")
+    return(NULL)
+  }
+  
+  files <- list.files(folder, full.names = TRUE)
+  if(length(files) == 0) return(NULL)
+  
+  df <- map_dfr(files, read_excel)
+  df$rclim <- sub("R", "", region)   # Afegim el codi climàtic (1,2,3)
+  
+  return(df)
+}
+
+# Llegir i combinar totes les regions
+pheno <- map_dfr(regions, read_pheno_region)
+
+# Filtrar fora espècies problemàtiques
+exclude <- c("HES","PIE","LYC","PAP","NYM","SAT",
+             "hespsp","hestsp","lyclsp","nymasp","nymlsp","nymmsp",
+             "piegsp","piepsp","pielsp","satesp","lycags")
+
+pheno <- pheno %>% 
+  filter(!SPECIES %in% exclude) %>% 
+  distinct()
+
+# Crear carpeta final_results si no existeix
+dir.create("output/final_results", recursive = TRUE, showWarnings = FALSE)
+
+# Guardar pheno complet
+write.csv(pheno, "output/final_results/pheno_2024.csv", row.names = FALSE)
+write.table(pheno, "output/final_results/pheno.txt", row.names = FALSE)
+
+## FER PHENO WEB
+
+phenoa<-pheno %>% select(1,2,7,16,17)
+
+phenoa<-unique(phenoa)
+phenoa<-na.omit(phenoa)
+
+phenoa_mean <- phenoa %>%
+  group_by(SPECIES, WEEK, rclim) %>%
+  summarise(mean_NM = mean(NM, na.rm = TRUE)) %>%
+  ungroup()
+
+names(phenoa_mean)=c("SPECIES", "week", "rclim", "NM")
+
+phenoa_mean$week<-phenoa_mean$week-9
+phenoa_mean<-phenoa_mean[phenoa_mean$week %in% 1:30, ]
+
+
+phenoa_mean <- merge(
+  phenoa_mean,
+  names_CBMS %>% select(-nom_cat),
+  by = "SPECIES"
+)
+
+phenoa <- phenoa %>% filter(!is.na(SITE_ID))
+write.csv(phenoa_mean, file=("output/final_results/pheno_web.csv"), row.names = FALSE)
+write.csv(phenoa, file=("output/final_results/pheno.csv"), row.names = FALSE)
+
+
+phenoa_mean<-merge(phenoa_mean, names_CBMS, by="SPECIES")
+
+
+```
+
+# 3. TRIM_COMPILED
+
+```{r}
+library(dplyr)
+library(purrr)
+library(readr)
+
+#--------------------------------------
+# CONFIGURACIÓ GENERAL
+#--------------------------------------
+
+# Regions climàtiques i carpeta general
+regions <- c("R1", "R2", "R3", "R4")
+general_region <- "general"
+
+# Rang d'anys TRIM
+trim_years <- 1994:2025
+
+# Crear carpeta final_results si no existeix
+dir.create("output/final_results", recursive = TRUE, showWarnings = FALSE)
+
+#--------------------------------------
+# FUNCIÓ: processa un fitxer TRIM
+#--------------------------------------
+
+process_trim_file <- function(file, trim_years, region_code) {
+  
+  datos <- read.csv(file, header = TRUE, check.names = FALSE)
+  
+  # Separem la part comuna (1:14) i la part d’anys
+  columnas_comunes <- datos[, 1:14]
+  columnas_anys <- datos[, 15:ncol(datos)]
+  
+  # Obtenim anys des del header
+  anys_detectats <- suppressWarnings(as.numeric(colnames(columnas_anys)))
+  
+  if (any(is.na(anys_detectats))) {
+    stop(paste("Error amb els noms de columnes d'anys a:", file))
+  }
+  
+  # Preparem la matriu buida amb tots els anys del rang
+  matriu_anys <- as.data.frame(
+    matrix(
+      NA,
+      nrow = nrow(columnas_comunes),
+      ncol = length(trim_years)
+    )
+  )
+  colnames(matriu_anys) <- trim_years
+  
+  # Omplim només els anys existents
+  anys_en_arxiu <- intersect(anys_detectats, trim_years)
+  
+  matriu_anys[, as.character(anys_en_arxiu)] <-
+    columnas_anys[, as.character(anys_en_arxiu), drop = FALSE]
+  
+  # Assigna la regió climàtica
+  columnas_comunes$rclim <- region_code
+  
+  cbind(columnas_comunes, matriu_anys)
+}
+
+#--------------------------------------
+# FUNCIÓ: llegeix TRIM per regió (R1–R4)
+#--------------------------------------
+
+read_trim_region <- function(region){
+  
+  folder <- file.path("output/saved", region, "trim")
+  
+  if (!dir.exists(folder)) {
+    cat("⚠ Carpeta no trobada:", folder, "\n")
+    return(NULL)
+  }
+  
+  files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
+  
+  if (length(files) == 0) {
+    cat("⚠ No hi ha arxius TRIM a:", folder, "\n")
+    return(NULL)
+  }
+  
+  map_dfr(
+    files,
+    process_trim_file,
+    trim_years = trim_years,
+    region_code = region
+  )
+}
+
+#--------------------------------------
+# FUNCIÓ: llegeix TRIM GENERAL (R0)
+#--------------------------------------
+
+read_trim_general <- function(){
+  
+  folder <- file.path("output/saved/general", "trim")
+  
+  if (!dir.exists(folder)) {
+    cat("⚠ Carpeta GENERAL no trobada:", folder, "\n")
+    return(NULL)
+  }
+  
+  files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
+  
+  if (length(files) == 0) {
+    cat("⚠ No hi ha arxius TRIM a la carpeta GENERAL.\n")
+    return(NULL)
+  }
+  
+  map_dfr(
+    files,
+    process_trim_file,
+    trim_years = trim_years,
+    region_code = "R0"
+  )
+}
+
+#--------------------------------------
+# LECTURA I COMBINACIÓ DE TAULES
+#--------------------------------------
+
+# Combina R1–R4
+tabla_trim_regions <- map_dfr(regions, read_trim_region)
+
+# Combina GENERAL (R0)
+tabla_trim_general <- read_trim_general()
+
+# Taula completa
+tabla_trim <- bind_rows(tabla_trim_regions, tabla_trim_general)
+
+#--------------------------------------
+# 🔧 NORMALITZACIÓ Species_name (GENERAL)
+#--------------------------------------
+
+tabla_trim <- tabla_trim %>%
+  mutate(
+    Species_name = if_else(
+      rclim == "R0",
+      gsub("_", " ", Species_name),
+      Species_name
+    )
+  )
+
+#--------------------------------------
+# GUARDA RESULTAT FINAL
+#--------------------------------------
+
+write.csv(
+  tabla_trim,
+  "output/final_results/trim_compiled.csv",
+  row.names = FALSE
+)
+
+# Mostra la taula final
+tabla_trim
+
+```
+
+
+## 4. Generar taula COINDEX
+
+```{r}
+
+# Paquetes necesarios
+library(dplyr)
+library(tidyr)
+library(readr)
+
+# Llegir fitxer
+trim_compiled <- read_csv("./output/final_results/trim_compiled.csv")
+
+# ---- Afegir rclim com a columna abans de pivot ----
+trim_compiled <- trim_compiled %>%
+  mutate(rclim = .[[15]])  # columna que conté R0/R1/R2/R3/R4
+
+# 1) Seleccionar només les dues primeres files de cada bloc de 4
+tabla <- trim_compiled %>%
+  mutate(grupo = ceiling(row_number() / 4)) %>%
+  filter((row_number() - 1) %% 4 + 1 <= 2)
+
+# 2) Quedar-nos amb Species_name + columnes d'anys + rclim
+tabla <- tabla %>% select(Species_name, rclim, 15:(ncol(.)-1))  # ajusta si cal
+
+# 3) Evitar columnes sense nom
+tabla <- tabla[, !is.na(names(tabla)) & names(tabla) != ""]
+
+# 4) Pivot llarg i ampli
+tabla <- tabla %>%
+  mutate(
+    fila_tipo = if_else(row_number() %% 2 == 0, "se", "index")
+  ) %>%
+  mutate(grupo = rep(1:(n() / 2), each = 2)) %>%
+  pivot_longer(
+    cols = matches("^[0-9]{4}$"),  # només columnes anys
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  pivot_wider(
+    names_from = fila_tipo,
+    values_from = Value
+  )
+
+# 5) Format final
+co_index <- tabla
+co_index$BMS_ID <- "CBMS"
+
+# 6) Treure NA
+co_index <- co_index %>% filter(!is.na(index))
+
+# 7) Afegir id i reordenar
+co_index$id <- "tot"
+co_index <- co_index %>% select(Species_name, id, Year, index, se, BMS_ID, rclim)
+
+# 8) Treure espècies excloses
+exclusions <- c("HES","PIE","PAP","LYC","NYM","SAT",
+                "hespsp","hestsp","lyclsp","nymasp","nymlsp",
+                "nymmsp","piegsp","piepsp","pielsp","satesp","lycags")
+co_index <- co_index %>% filter(!Species_name %in% exclusions)
+
+names(co_index)[names(co_index) == "Species_name"] <- "SPECIES"
+co_index$SPECIES <- gsub("_", " ", co_index$SPECIES)
+
+co_index <- merge(
+  co_index,
+  names_CBMS %>% select(-nom_cat),
+  by = "SPECIES"
+)
+co_index$rclim <- gsub("R", "", co_index$rclim)
+
+
+write.csv(co_index, "output/final_results/coindex.csv", row.names = FALSE)
+
+
+#--------------------------------------
+# Paquets
+#--------------------------------------
+library(dplyr)
+library(tidyr)
+library(readr)
+
+#--------------------------------------
+# Llegir fitxer
+#--------------------------------------
+trim_compiled <- read_csv("./output/final_results/trim_compiled.csv")
+
+#--------------------------------------
+# rclim (columna 15)
+#--------------------------------------
+trim_compiled <- trim_compiled %>%
+  mutate(rclim = .[[15]])
+
+#--------------------------------------
+# 1) Quedar-nos amb index + se PER espècie i regió
+#--------------------------------------
+tabla <- trim_compiled %>%
+  group_by(Species_name, rclim) %>%
+  slice_head(n = 2) %>%   # 👈 FIX CLAU
+  ungroup()
+
+#--------------------------------------
+# 2) Seleccionar espècie + rclim + anys
+#--------------------------------------
+tabla <- tabla %>%
+  select(Species_name, rclim, matches("^[0-9]{4}$"))
+
+#--------------------------------------
+# 3) Pivot llarg i ample (robust)
+#--------------------------------------
+tabla <- tabla %>%
+  group_by(Species_name, rclim) %>%
+  mutate(fila_tipo = c("index", "se")) %>%
+  ungroup() %>%
+  pivot_longer(
+    cols = matches("^[0-9]{4}$"),
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  pivot_wider(
+    id_cols    = c(Species_name, rclim, Year),
+    names_from = fila_tipo,
+    values_from = Value
+  )
+
+#--------------------------------------
+# 4) Format final
+#--------------------------------------
+co_index <- tabla %>%
+  filter(!is.na(index)) %>%
+  mutate(
+    id = "tot",
+    BMS_ID = "CBMS"
+  ) %>%
+  select(Species_name, id, Year, index, se, BMS_ID, rclim)
+
+#--------------------------------------
+# 🔧 NORMALITZACIÓ DEL GUIÓ (TOTES LES FILES)
+#--------------------------------------
+co_index <- co_index %>%
+  mutate(
+    Species_name = gsub("\\b([a-zA-Z]) album\\b", "\\1-album", Species_name)
+  )
+
+------------------
+# 5) Treure espècies excloses
+#--------------------------------------
+exclusions <- c(
+  "HES","PIE","PAP","LYC","NYM","SAT",
+  "hespsp","hestsp","lyclsp","nymasp","nymlsp",
+  "nymmsp","piegsp","piepsp","pielsp","satesp","lycags"
+)
+
+co_index <- co_index %>%
+  filter(!Species_name %in% exclusions)
+
+#--------------------------------------
+# 6) Normalitzar nom espècie
+#--------------------------------------
+names(co_index)[names(co_index) == "Species_name"] <- "SPECIES"
+co_index$SPECIES <- gsub("_", " ", co_index$SPECIES)
+
+#--------------------------------------
+# 7) Merge amb noms (sense nom_cat)
+#--------------------------------------
+co_index <- merge(
+  co_index,
+  names_CBMS %>% select(-nom_cat),
+  by = "SPECIES"
+)
+
+#--------------------------------------
+# 8) rclim a numèric
+#--------------------------------------
+co_index$rclim <- gsub("R", "", co_index$rclim)
+
+#--------------------------------------
+# 9) Guardar
+#--------------------------------------
+write.csv(
+  co_index,
+  "output/final_results/coindex.csv",
+  row.names = FALSE
+)
+
+co_index
+
+
+```
+
+## 5. Generar taula TRENDS
+
+```{r}
+# Leer el archivo resultante
+library(dplyr)
+
+# Afegim rclim abans de filtrar
+trends <- trim_compiled %>%
+  mutate(
+    rclim = .[[15]],          # assigna rclim de la columna 15
+    grupo = ceiling(row_number() / 4)
+  ) %>%
+  filter((row_number() - 1) %% 4 + 1 <= 1)
+
+# Treure files on Species_name conté "sp."
+trends <- trends %>%
+  filter(!grepl("sp\\.", Species_name, ignore.case = TRUE))
+
+# Definir quines columnes són anys
+year_cols <- names(trends)[grepl("^[0-9]{4}$", names(trends))]
+
+trends <- trends %>%
+  rowwise() %>% 
+  mutate(
+
+    # nombre d'anys amb dades
+    n_years = length(which(!is.na(c_across(all_of(year_cols))))),
+
+    # taxa_canvi: rate_lt - 1
+    taxa_canvi = Slope_imputed_mul - 1,
+
+    # canvi_acumulat (antic change_elev)
+    canvi_acumulat = (Slope_imputed_mul ^ n_years - 1) * 100,
+
+    # posar NA quan classificació és "Stable" o "Uncertain"
+    taxa_canvi = ifelse(Slope_imputed_classification %in% c("Uncertain"),
+                        NA, taxa_canvi),
+    canvi_acumulat = ifelse(Slope_imputed_classification %in% c("Uncertain"),
+                            NA, canvi_acumulat)
+  ) %>%
+  ungroup() %>%
+  select(-n_years)
+
+# Guardar la taula
+write.csv(trends, "output/final_results/trends_compiled.csv", row.names = FALSE)
+
+
+```
+## 6. Generar ternds 10 anys i unir a taula anterior
+
+```{r}
+
+library(dplyr)
+library(purrr)
+library(readr)
+
+regions <- c("R1", "R2", "R3","R4")
+general_region <- "general"
+
+trim_years <- 2016:2025
+
+dir.create("output/final_results", recursive = TRUE, showWarnings = FALSE)
+
+# --------------------------------------------------
+# FUNCIONS PER LLEGIR TRIM (10y)
+# --------------------------------------------------
+
+process_trim_file <- function(file, trim_years, region_code) {
+  
+  datos <- read.csv(file, header = TRUE, check.names = FALSE)
+  
+  columnas_comunes <- datos[, 1:14]
+  columnas_anys <- datos[, 15:ncol(datos)]
+  
+  anys_detectats <- suppressWarnings(as.numeric(colnames(columnas_anys)))
+  
+  if (any(is.na(anys_detectats))) {
+    stop(paste("Error amb els noms de columnes d'anys a:", file))
+  }
+  
+  matriu_anys <- as.data.frame(matrix(
+    NA,
+    nrow = nrow(columnas_comunes),
+    ncol = length(trim_years)
+  ))
+  colnames(matriu_anys) <- trim_years
+  
+  anys_en_arxiu <- intersect(anys_detectats, trim_years)
+  
+  matriu_anys[, as.character(anys_en_arxiu)] <-
+    columnas_anys[, as.character(anys_en_arxiu), drop = FALSE]
+  
+  columnas_comunes$rclim <- region_code
+  
+  cbind(columnas_comunes, matriu_anys)
+}
+
+read_trim_region_10y <- function(region){
+  
+  folder <- file.path("output/saved/10y", region, "trim")
+  
+  if (!dir.exists(folder)) {
+    cat("⚠ Carpeta no trobada:", folder, "\n")
+    return(NULL)
+  }
+  
+  files <- list.files(folder, pattern="\\.csv$", full.names=TRUE)
+  
+  if (length(files) == 0) {
+    cat("⚠ No hi ha arxius TRIM 10y a:", folder, "\n")
+    return(NULL)
+  }
+  
+  map_dfr(files, process_trim_file, trim_years = trim_years, region_code = region)
+}
+
+read_trim_general_10y <- function(){
+  
+  folder <- file.path("output/saved/10y/general", "trim")
+  
+  if (!dir.exists(folder)) {
+    cat("⚠ Carpeta GENERAL 10y no trobada:", folder, "\n")
+    return(NULL)
+  }
+  
+  files <- list.files(folder, pattern="\\.csv$", full.names=TRUE)
+  
+  if (length(files) == 0) {
+    cat("⚠ No hi ha arxius TRIM 10y a GENERAL.\n")
+    return(NULL)
+  }
+  
+  map_dfr(files, process_trim_file, trim_years = trim_years, region_code = "R0")
+}
+
+# --------------------------------------------------
+# COMBINAR TRIM 10y
+# --------------------------------------------------
+
+tabla_trim_regions_10y <- map_dfr(regions, read_trim_region_10y)
+tabla_trim_general_10y <- read_trim_general_10y()
+tabla_trim_10y <- bind_rows(tabla_trim_regions_10y, tabla_trim_general_10y)
+
+write.csv(tabla_trim_10y,
+          "output/final_results/trim_10y_compiled.csv",
+          row.names = FALSE)
+
+# --------------------------------------------------
+# CREAR trends_10y (1 fila per espècie)
+# --------------------------------------------------
+
+trim_10y_compiled <- read.csv("output/final_results/trim_10y_compiled.csv",
+                              check.names = FALSE)
+
+trends_10y <- trim_10y_compiled %>%
+  mutate(
+    rclim = .[[15]],
+    grupo = ceiling(row_number() / 4)
+  ) %>%
+  filter((row_number() - 1) %% 4 + 1 == 1) %>% 
+  filter(!grepl("sp\\.", Species_name, ignore.case = TRUE))
+
+# Columnes d'anys
+year_cols_10 <- names(trends_10y)[grepl("^[0-9]{4}$", names(trends_10y))]
+
+trends_10y <- trends_10y %>%
+  rowwise() %>%
+  mutate(
+    n_years_10 = length(which(!is.na(c_across(all_of(year_cols_10))))),
+
+    # Càlculs correctes
+    taxa_canvi_10 = Slope_imputed_mul - 1,
+    canvi_acumulat_10 = (Slope_imputed_mul ^ n_years_10 - 1) * 100,
+
+    # NAs condicionals
+    taxa_canvi_10 = ifelse(Slope_imputed_classification %in% c("Uncertain"),
+                           NA, taxa_canvi_10),
+    canvi_acumulat_10 = ifelse(Slope_imputed_classification %in% c("Uncertain"),
+                               NA, canvi_acumulat_10)
+  ) %>%
+  ungroup() %>%
+  select(-n_years_10)
+
+write.csv(trends_10y,
+          "output/final_results/trends_10y_compiled.csv",
+          row.names = FALSE)
+
+# --------------------------------------------------
+# MERGE AMB trends GENERAL
+# --------------------------------------------------
+
+trends <- read.csv("output/final_results/trends_compiled.csv",
+                   check.names = FALSE)
+
+# Renombrar columnes 10y (excepte Species_name i rclim)
+trends_10y_ren <- trends_10y %>%
+  rename_with(
+    ~ paste0(.x, "_10"),
+    .cols = -c(Species_name, rclim)
+  )
+
+trends_full <- trends %>%
+  left_join(trends_10y_ren, by = c("Species_name", "rclim"))
+
+trends_full$Species_name[trends_full$Species_name == "Polygonia c album"] <- "Polygonia c-album"
+trends_full$Species_name[trends_full$Species_name == "Satyrium w album"]  <- "Satyrium w-album"
+
+names(trends_full)[names(trends_full) == "Species_name"] <- "SPECIES"
+trends_full$SPECIES <- gsub("_", " ", trends_full$SPECIES)
+
+
+trends_full <- merge(
+  trends_full,
+  names_CBMS %>% select(-nom_cat),
+  by = "SPECIES"
+)
+
+trends_full$rclim <- gsub("R", "", trends_full$rclim)
+
+
+write.csv(trends_full,
+          "output/final_results/trends_full.csv",
+          row.names = FALSE)
+```
+
+## 7. Generar taula TRENDS per a SUBSETS
+```{r}
+process_subset <- function(subset_name, trim_years = 1994:2025) {
+  
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(readr)
+  
+  folder <- file.path("output/saved/subsets", subset_name, "trim")
+  if (!dir.exists(folder)) stop("No existeix la carpeta: ", folder)
+  
+  message("➡ Processant subset: ", subset_name)
+  
+  outdir <- file.path("output/final_results/subsets", subset_name)
+  dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+  
+  files <- list.files(folder, pattern="\\.csv$", full.names=TRUE)
+  if (length(files) == 0) stop("No hi ha arxius TRIM a: ", folder)
+  
+  # ----------------------------
+  # 🔵 PART 1 — LLEGIR I NORMALITZAR TRIM
+  # ----------------------------
+  
+  process_trim_file <- function(file) {
+    datos <- read.csv(file, header = TRUE, check.names = FALSE)
+    
+    columnas_comunes <- datos[, 1:14]
+    columnas_anys <- datos[, 15:ncol(datos)]
+    
+    anys_detectats <- suppressWarnings(as.numeric(colnames(columnas_anys)))
+    
+    matriu_anys <- as.data.frame(matrix(
+      NA, nrow = nrow(columnas_comunes), ncol = length(trim_years)
+    ))
+    colnames(matriu_anys) <- trim_years
+    
+    anys_en_arxiu <- intersect(trim_years, anys_detectats)
+    matriu_anys[, as.character(anys_en_arxiu)] <-
+      columnas_anys[, as.character(anys_en_arxiu), drop = FALSE]
+    
+    columnas_comunes$rclim <- subset_name  
+    cbind(columnas_comunes, matriu_anys)
+  }
+  
+  trim_df <- map_dfr(files, process_trim_file)
+  
+  # 🔥 FILTRE IMPORTANT: EXIGIR MÍNIM 3 ITINERARIS  
+  trim_df <- trim_df %>% filter(N_sites >= 3)
+  
+  message("✔ Filtrades espècies amb N_sites < 3. Restants: ", nrow(trim_df))
+  
+  # ----------------------------
+  # 🔵 PART 2 — GENERAR COINDEX
+  # ----------------------------
+  
+  coindex <- trim_df %>%
+    mutate(fila_tipo = rep(c("index","se"), n()/2),
+           grupo = rep(1:(n()/2), each = 2)) %>%
+    pivot_longer(
+      cols = matches("^[0-9]{4}$"),
+      names_to = "Year",
+      values_to = "Value"
+    ) %>%
+    pivot_wider(
+      names_from = fila_tipo,
+      values_from = Value
+    ) %>%
+    filter(!is.na(index)) %>%
+    mutate(
+      BMS_ID = "CBMS",
+      id = "tot"
+    ) %>%
+    select(IDesp = Species_name, id, Year, index, se, BMS_ID, rclim) %>%
+    filter(!grepl("sp\\.", IDesp, ignore.case = TRUE)) 
+  
+  write.csv(coindex,
+            file.path(outdir, "coindex.csv"),
+            row.names = FALSE)
+  
+  message("✔ Generat coindex per ", subset_name)
+  
+  # ----------------------------
+  # 🔵 PART 3 — GENERAR TRENDS
+  # ----------------------------
+  
+  trends <- trim_df %>%
+    mutate(grupo = ceiling(row_number()/4)) %>%
+    filter((row_number()-1) %% 4 + 1 == 1) %>%
+    filter(!grepl("sp\\.", Species_name, ignore.case = TRUE))
+  
+  any_cols <- names(trends)[grepl("^[0-9]{4}$", names(trends))]
+  
+  trends <- trends %>%
+    rowwise() %>%
+    mutate(
+      n_years = length(which(!is.na(c_across(all_of(any_cols))))),
+      
+      taxa_canvi = Slope_imputed_mul - 1,
+      
+      canvi_acumulat = (Slope_imputed_mul ^ n_years - 1) * 100,
+      
+      taxa_canvi = ifelse(Slope_imputed_classification %in% c("Stable","Uncertain"),
+                          NA, taxa_canvi),
+      canvi_acumulat = ifelse(Slope_imputed_classification %in% c("Stable","Uncertain"),
+                              NA, canvi_acumulat)
+    ) %>%
+    ungroup() %>%
+    select(-n_years)
+  
+  write.csv(trends,
+            file.path(outdir, "trends.csv"),
+            row.names = FALSE)
+  
+  message("✔ Generat trends per ", subset_name)
+  
+  return(list(coindex = coindex, trends = trends))
+}
+
+process_subset("diba_10y")
+
+
+```
+
+## COMPILATS ANTICS
+
+Posats per no tirar res
+
+### C.ÍNDEXS LOCALS - SINDEX
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+#REGIO1
+carpeta_a_compilar <- "output/saved/sindex1"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+sindex1 = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  sindex1<- rbind(sindex1,dataFromExcel)
+} 
+
+#REGIO 2
+carpeta_a_compilar <- "output/saved/sindex2"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+sindex2 = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  sindex2<- rbind(sindex2,dataFromExcel)
+} 
+
+#REGIO3
+carpeta_a_compilar <- "output/saved/sindex3"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+sindex3 = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  sindex3<- rbind(sindex3,dataFromExcel)
+} 
+
+sitendex<-rbind(sindex1,sindex2,sindex3)
+rm(sindex1)
+rm(sindex2)
+rm(sindex3)
+
+sitendex <-sitendex [!sitendex$SPECIES %in% c("HES","PIE","PAP","LYC","NYM","SAT","hespsp","hestsp","lyclsp","nymasp","nymlsp","nymmsp","piegsp","piepsp","pielsp","satesp","lycags"),]
+
+write.csv(sitendex, file=("output/final_results/sites.csv"), row.names = FALSE)
+
+sindex$SPECIES <- gsub("_", " ", sindex$SPECIES)
+names(sindex)[names(sindex) == "region"] <- "rclim"
+sindex<-merge(sindex, names_CBMS, by="SPECIES")
+write.csv(sindex, file=("output/final_results/sites.csv"), row.names = FALSE)
+
+```
+
+### COMPILAR TRENDS
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+library(readxl)
+
+carpeta_a_compilar <- "output/saved/andorra/trends"
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+
+# Inicializar un dataframe vacío para almacenar los datos compilados
+trendsG <- data.frame()
+
+# Nombres de columnas esperados para los archivos de 19 columnas
+column_names_19cols <- NULL
+
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  
+  # Asumir que el número total de columnas esperadas es 19
+  total_columns_expected <- 19
+  
+  # Si el archivo tiene solo 13 columnas
+  if (ncol(dataFromExcel) == 13) {
+    # Crear columnas en blanco con los nombres correspondientes
+    extra_columns <- data.frame(
+      nboot_10y = NA, rate_10y = NA, rate_10y_low = NA, rate_10y_upp = NA, pcn_10y = NA
+    )
+    # Añadir las columnas faltantes al dataframe
+    dataFromExcel <- cbind(dataFromExcel, extra_columns)
+  }
+  
+  # Ajustar el número de columnas si es necesario
+  if (ncol(dataFromExcel) < total_columns_expected) {
+    extra_cols <- total_columns_expected - ncol(dataFromExcel)
+    for (i in 1:extra_cols) {
+      dataFromExcel[[paste0("Blank_Column_", i)]] <- NA
+    }
+  }
+  
+  # Ajustar el orden y nombres de las columnas
+  colnames(dataFromExcel) <- c(
+    paste0("Blank_Column_", 1:(total_columns_expected - ncol(dataFromExcel))),
+    "nboot_10y", "rate_10y", "rate_10y_low", "rate_10y_upp", "pcn_10y"
+  )
+  
+  # Si es un archivo de 19 columnas, guardar los nombres de las columnas
+  if (ncol(dataFromExcel) == 19 && is.null(column_names_19cols)) {
+    column_names_19cols <- colnames(dataFromExcel)
+  }
+  
+  # Combinar los dataframes
+  trendsG <- rbind(trendsG, dataFromExcel)
+}
+
+# Asignar los nombres de columnas de los archivos de 19 columnas al dataframe resultante
+if (!is.null(column_names_19cols)) {
+  colnames(trendsG) <- column_names_19cols
+}
+
+names(trendsG)<-c("data_from", "data_to", "data_nyears", "minyear", "maxyear", "n", "nboot_It",
+                  "rate_It", "rate_It_low", "rate_It_upp", "pcn_It", "TrendClass_It","nboot_10y",
+                  "rate_10y","rate_10y_low","rate_10y_upp", "pcn_10y","TrendClass_10y","SPECIES")
+
+### R1
+carpeta_a_compilar <- "output/saved/R1/trends"
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+
+# Inicializar un dataframe vacío para almacenar los datos compilados
+trends1 <- data.frame()
+
+# Nombres de columnas esperados para los archivos de 19 columnas
+column_names_19cols <- NULL
+
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  
+  # Asumir que el número total de columnas esperadas es 19
+  total_columns_expected <- 19
+  
+  # Si el archivo tiene solo 13 columnas
+  if (ncol(dataFromExcel) == 13) {
+    # Crear columnas en blanco con los nombres correspondientes
+    extra_columns <- data.frame(
+      nboot_10y = NA, rate_10y = NA, rate_10y_low = NA, rate_10y_upp = NA, pcn_10y = NA
+    )
+    # Añadir las columnas faltantes al dataframe
+    dataFromExcel <- cbind(dataFromExcel, extra_columns)
+  }
+  
+  # Ajustar el número de columnas si es necesario
+  if (ncol(dataFromExcel) < total_columns_expected) {
+    extra_cols <- total_columns_expected - ncol(dataFromExcel)
+    for (i in 1:extra_cols) {
+      dataFromExcel[[paste0("Blank_Column_", i)]] <- NA
+    }
+  }
+  
+  # Ajustar el orden y nombres de las columnas
+  colnames(dataFromExcel) <- c(
+    paste0("Blank_Column_", 1:(total_columns_expected - ncol(dataFromExcel))),
+    "nboot_10y", "rate_10y", "rate_10y_low", "rate_10y_upp", "pcn_10y"
+  )
+  
+  # Si es un archivo de 19 columnas, guardar los nombres de las columnas
+  if (ncol(dataFromExcel) == 19 && is.null(column_names_19cols)) {
+    column_names_19cols <- colnames(dataFromExcel)
+  }
+  
+  # Combinar los dataframes
+  trends1 <- rbind(trends1, dataFromExcel)
+}
+
+# Asignar los nombres de columnas de los archivos de 19 columnas al dataframe resultante
+if (!is.null(column_names_19cols)) {
+  colnames(trends1) <- column_names_19cols
+}
+
+names(trends1)<-c("data_from", "data_to", "data_nyears", "minyear", "maxyear", "n", "nboot_It",
+                  "rate_It", "rate_It_low", "rate_It_upp", "pcn_It", "TrendClass_It","nboot_10y",
+                  "rate_10y","rate_10y_low","rate_10y_upp", "pcn_10y","TrendClass_10y","SPECIES")
+
+
+### R2
+carpeta_a_compilar <- "output/saved/R2/trends"
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+
+# Inicializar un dataframe vacío para almacenar los datos compilados
+trends2 <- data.frame()
+
+# Nombres de columnas esperados para los archivos de 19 columnas
+column_names_19cols <- NULL
+
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  
+  # Asumir que el número total de columnas esperadas es 19
+  total_columns_expected <- 19
+  
+  # Si el archivo tiene solo 13 columnas
+  if (ncol(dataFromExcel) == 13) {
+    # Crear columnas en blanco con los nombres correspondientes
+    extra_columns <- data.frame(
+      nboot_10y = NA, rate_10y = NA, rate_10y_low = NA, rate_10y_upp = NA, pcn_10y = NA
+    )
+    # Añadir las columnas faltantes al dataframe
+    dataFromExcel <- cbind(dataFromExcel, extra_columns)
+  }
+  
+  # Ajustar el número de columnas si es necesario
+  if (ncol(dataFromExcel) < total_columns_expected) {
+    extra_cols <- total_columns_expected - ncol(dataFromExcel)
+    for (i in 1:extra_cols) {
+      dataFromExcel[[paste0("Blank_Column_", i)]] <- NA
+    }
+  }
+  
+  # Ajustar el orden y nombres de las columnas
+  colnames(dataFromExcel) <- c(
+    paste0("Blank_Column_", 1:(total_columns_expected - ncol(dataFromExcel))),
+    "nboot_10y", "rate_10y", "rate_10y_low", "rate_10y_upp", "pcn_10y"
+  )
+  
+  # Si es un archivo de 19 columnas, guardar los nombres de las columnas
+  if (ncol(dataFromExcel) == 19 && is.null(column_names_19cols)) {
+    column_names_19cols <- colnames(dataFromExcel)
+  }
+  
+  # Combinar los dataframes
+  trends2 <- rbind(trends2, dataFromExcel)
+}
+
+# Asignar los nombres de columnas de los archivos de 19 columnas al dataframe resultante
+if (!is.null(column_names_19cols)) {
+  colnames(trends2) <- column_names_19cols
+}
+
+names(trends2)<-c("data_from", "data_to", "data_nyears", "minyear", "maxyear", "n", "nboot_It",
+                  "rate_It", "rate_It_low", "rate_It_upp", "pcn_It", "TrendClass_It","nboot_10y",
+                  "rate_10y","rate_10y_low","rate_10y_upp", "pcn_10y","TrendClass_10y","SPECIES")
+
+
+### R3
+carpeta_a_compilar <- "output/saved/R3/trends"
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+
+# Inicializar un dataframe vacío para almacenar los datos compilados
+trends3 <- data.frame()
+
+# Nombres de columnas esperados para los archivos de 19 columnas
+column_names_19cols <- NULL
+
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  
+  # Asumir que el número total de columnas esperadas es 19
+  total_columns_expected <- 19
+  
+  # Si el archivo tiene solo 13 columnas
+  if (ncol(dataFromExcel) == 13) {
+    # Crear columnas en blanco con los nombres correspondientes
+    extra_columns <- data.frame(
+      nboot_10y = NA, rate_10y = NA, rate_10y_low = NA, rate_10y_upp = NA, pcn_10y = NA
+    )
+    # Añadir las columnas faltantes al dataframe
+    dataFromExcel <- cbind(dataFromExcel, extra_columns)
+  }
+  
+  # Ajustar el número de columnas si es necesario
+  if (ncol(dataFromExcel) < total_columns_expected) {
+    extra_cols <- total_columns_expected - ncol(dataFromExcel)
+    for (i in 1:extra_cols) {
+      dataFromExcel[[paste0("Blank_Column_", i)]] <- NA
+    }
+  }
+  
+  # Ajustar el orden y nombres de las columnas
+  colnames(dataFromExcel) <- c(
+    paste0("Blank_Column_", 1:(total_columns_expected - ncol(dataFromExcel))),
+    "nboot_10y", "rate_10y", "rate_10y_low", "rate_10y_upp", "pcn_10y"
+  )
+  
+  # Si es un archivo de 19 columnas, guardar los nombres de las columnas
+  if (ncol(dataFromExcel) == 19 && is.null(column_names_19cols)) {
+    column_names_19cols <- colnames(dataFromExcel)
+  }
+  
+  # Combinar los dataframes
+  trends3 <- rbind(trends3, dataFromExcel)
+}
+
+# Asignar los nombres de columnas de los archivos de 19 columnas al dataframe resultante
+if (!is.null(column_names_19cols)) {
+  colnames(trends3) <- column_names_19cols
+}
+
+names(trends3)<-c("data_from", "data_to", "data_nyears", "minyear", "maxyear", "n", "nboot_It",
+                  "rate_It", "rate_It_low", "rate_It_upp", "pcn_It", "TrendClass_It","nboot_10y",
+                  "rate_10y","rate_10y_low","rate_10y_upp", "pcn_10y","TrendClass_10y","SPECIES")
+
+
+### Balear
+carpeta_a_compilar <- "output/saved/IB/trends"
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+
+# Inicializar un dataframe vacío para almacenar los datos compilados
+trends4 <- data.frame()
+
+# Nombres de columnas esperados para los archivos de 19 columnas
+column_names_19cols <- NULL
+
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  
+  # Asumir que el número total de columnas esperadas es 19
+  total_columns_expected <- 19
+  
+  # Si el archivo tiene solo 13 columnas
+  if (ncol(dataFromExcel) == 13) {
+    # Crear columnas en blanco con los nombres correspondientes
+    extra_columns <- data.frame(
+      nboot_10y = NA, rate_10y = NA, rate_10y_low = NA, rate_10y_upp = NA, pcn_10y = NA
+    )
+    # Añadir las columnas faltantes al dataframe
+    dataFromExcel <- cbind(dataFromExcel, extra_columns)
+  }
+  
+  # Ajustar el número de columnas si es necesario
+  if (ncol(dataFromExcel) < total_columns_expected) {
+    extra_cols <- total_columns_expected - ncol(dataFromExcel)
+    for (i in 1:extra_cols) {
+      dataFromExcel[[paste0("Blank_Column_", i)]] <- NA
+    }
+  }
+  
+  # Ajustar el orden y nombres de las columnas
+  colnames(dataFromExcel) <- c(
+    paste0("Blank_Column_", 1:(total_columns_expected - ncol(dataFromExcel))),
+    "nboot_10y", "rate_10y", "rate_10y_low", "rate_10y_upp", "pcn_10y"
+  )
+  
+  # Si es un archivo de 19 columnas, guardar los nombres de las columnas
+  if (ncol(dataFromExcel) == 19 && is.null(column_names_19cols)) {
+    column_names_19cols <- colnames(dataFromExcel)
+  }
+  
+  # Combinar los dataframes
+  trends4 <- rbind(trends4, dataFromExcel)
+}
+
+# Asignar los nombres de columnas de los archivos de 19 columnas al dataframe resultante
+if (!is.null(column_names_19cols)) {
+  colnames(trends4) <- column_names_19cols
+}
+
+names(trends4)<-c("data_from", "data_to", "data_nyears", "minyear", "maxyear", "n", "nboot_It",
+                  "rate_It", "rate_It_low", "rate_It_upp", "pcn_It", "TrendClass_It","nboot_10y",
+                  "rate_10y","rate_10y_low","rate_10y_upp", "pcn_10y","TrendClass_10y","SPECIES")
+
+
+
+trendsG$rclim<-"0"
+trends1$rclim<-"1"
+trends2$rclim<-"2"
+trends3$rclim<-"3"
+trends4$rclim<-"4"
+
+compiled_trends<-rbind(trendsG, trends1, trends2, trends3, trends4)
+
+compiled_trends$SPECIES[is.na(compiled_trends$SPECIES)] <- ""
+compiled_trends$SPECIES[compiled_trends$SPECIES == ""] <- compiled_trends$nboot_10y[compiled_trends$SPECIES == ""]
+
+rm(trends1)
+rm(trends2)
+rm(trends3)
+rm(trends4)
+
+# Si quieres guardar el resultado en un archivo Excel
+write.xlsx(compiled_trends, "output/final_results/trends.xlsx")
+write.xlsx(trendsG, "output/saved/andorra/trendsdiba.xlsx")
+```
+
+### COMPILAR ÍNDEXS REGIONALS
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+library(devtools)
+library(data.table)
+library(data.table)
+library(sf)
+library(tmap)
+library(xlsx)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(readxl)
+#G
+carpeta_a_compilar <- "output/saved/CAT/co_index_ci"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+coindexG = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  coindexG<- rbind(coindexG,dataFromExcel)
+} 
+#R1
+carpeta_a_compilar <- "output/saved/R1/co_index_ci"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+coindex1 = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  coindex1<- rbind(coindex1,dataFromExcel)
+} 
+
+#R2
+carpeta_a_compilar <- "output/saved/R2/co_index_ci"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+coindex2 = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  coindex2<- rbind(coindex2,dataFromExcel)
+} 
+
+#R3
+carpeta_a_compilar <- "output/saved/R3/co_index_ci"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+coindex3 = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  coindex3<- rbind(coindex3,dataFromExcel)
+} 
+
+#R4
+carpeta_a_compilar <- "output/saved/IB/co_index_ci"
+# Obtén la lista de archivos en la carpeta
+lst <- list.files(path = carpeta_a_compilar, full.names = TRUE)
+# Itera a través de la lista y elimina cada archivo
+coindex4 = data.frame()
+# iterate over the names in the lists
+for(table in lst){
+  dataFromExcel <- read_excel(table)
+  coindex4<- rbind(coindex4,dataFromExcel)
+} 
+
+coindexG$rclim<-"0"
+coindex1$rclim<-"1"
+coindex2$rclim<-"2"
+coindex3$rclim<-"3"
+coindex4$rclim<-"4"
+
+co_index<-rbind(coindexG,coindex1,coindex2,coindex3,coindex4)
+rm(coindex1,coindex2, coindex3, coindex4, coindexG)
+
+co_index <-co_index [!co_index$SPECIES %in% c("HES","PIE","PAP","LYC","NYM","SAT","hespsp","hestsp","lyclsp","nymasp","nymlsp","nymmsp","piegsp","piepsp","pielsp","satesp","lycags"),]
+
+coindex_trends<-co_index
+coindex_trends$spclim<-paste(coindex_trends$SPECIES, coindex_trends$rclim)
+conteo_valores <- table(coindex_trends$spclim)
+
+# Identificar los valores que tienen al menos cuatro filas
+valores_con_al_menos_cuatro_filas <- names(conteo_valores[conteo_valores >= 8])
+
+# Filtrar el DataFrame para mantener solo las filas con los valores deseados
+df_filtrado <- coindex_trends[coindex_trends$spclim %in% valores_con_al_menos_cuatro_filas, ]
+co_index<-subset(df_filtrado, select= -spclim)
+
+
+write.csv(co_index, file=("output/final_results/coindex.csv"), row.names = FALSE)
+```
+
+Per a la Taula Coindex_ci ens interessarà també tenir altres camps
+
+-   NSITE (num). Nombre d'itineraris estudiats un any concret
+-   NSITE_OBS. (nombre d'itineraris que s'han tingut en compte un any concret per al comptatge de l'índex anual)
+-   COL_INDEX (num). Valor de l'índex abans d'aplicar-hi el mètode bootstrap.
+-   Estimated (binary). Apareix un 1 als anys en què no hi havia prous itineraris per estimar els valors i per tant s'han hagut d0usar els anys consecutius per calcular l'índex anual.
