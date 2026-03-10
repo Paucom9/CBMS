@@ -1,0 +1,565 @@
+---
+title: "Protocol per càlcul d'indicadors de comunitat CBMS"
+author: "Ubach, A., Pla-Narbona, C., Stefanescu, C."
+date: "02/09/2021"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+bibliography: references.bib
+---
+
+![](./images/logo_museu.png){width="15%"}
+
+![](./images/logo_CBMS.jpg){width="15%"}
+
+------------------------------------------------------------------------
+
+## 1. Introducció
+
+El [CBMS](https://www.catalanbms.org/ca/) (Catalan Butterfly Monitoring Scheme) és un programa de seguiment de papallones diürnes basat en la repetició setmanal de censos visuals al llarg de transsectes fixos, per tal de relacionar-los posteriorment amb diferents factors ambientals. La utilització de les papallones en aquests projectes respon al seu contrastat caràcter bioindicador, a la seva popularitat i carisma, i al fet d'haver experimentat, en temps recents, regressions generalitzades arreu d'Europa.
+
+El CBMS recull informació precisa de l'abundància d'espècies de ropalòcers en diferents tipus d'hàbitat,ja que els comptatges es diferencien a nivell de secció dins de cada itinerari. Aquestes dades permeten calcular diversos índexs que detallen les preferències d'una espècie per a cada ambient i que, després, formen la base per al càlcul dels indicadors multiespecífics d'hàbitat.
+
+A nivell de cada itinerari, s'obtenen els índexs d'abundància que informen de l'abundància relativa anual d'una espècie en aquella localitat. Aquests índexs es calculen a partir de la suma dels comptatges a l'itinerari. En aquells casos en què ha estat possible estimar la corba de vol regional mitjançant el model GAM ( @schmucki2015 ) , els índexs anuals inclouen els comptatges reals i els imputats per a les setmanes perdudes. En cas contrari, només inclouen els comptatges reals. D'altra banda, si les dades reals corresponen a un percentatge molt baix (menor al 10%), es considera que el model no és prou fiable per a fer un càlcul d'un índex d'abundància (l'espècie, en aquest cas, apareix com a no avaluada).
+
+A les fitxes d'espècie per itinerari es mostren els índexs anuals estandarditzats a una distància fixa de 100 m de transsecte per facilitar la comparació entre poblacions de diferents itineraris. Els valors d'abundància d'una espècie que apareixen a la taula general a les fitxes d'espècie i a les fitxes d'itinerari corresponen a mitjanes per a tots els anys disponibles.
+
+-   Per més informació sobre l'SSI adreceu-vos al protocol de càlcul de l'SSI i preferències d'hàbitat
+-   Per més informació sobre el TAO adreceu-vos al protocol de càlcul del TAO ( @ubach2019 )
+-   Per més informació sobre els indicadors climàtics adreceu-vos a
+
+Dels quatre indicadors específics explicats s'han calculat també indicadors de comunitat, que són un resum del conjunt de la comunitat de papallones en un moment determinat. Per a fer-ho es parteix del conjunt d'espècies trobada un any i es multiplica l'índex d'abundància relativa de cadascuna pel valor del seu índex específic. Abans de la multiplicació s'efectua una transformació extraient l'arrel de les abundàncies per evitar que l'índex es vegi alterat per les diferències que presenten algunes espècies amb les pròpies abundàncies. Aleshores de la multiplicació s'extreu un valor mitjà general per a cadascun dels anys, i s'observa com aquest valor evoluciona en el temps, indicant així quins canvis estan experimentant la comunitat de papallones.
+
+De l'índex específic de temperatura s'extreu l'índex tèrmic de comunitat (CTI), de l'índex específic de precipitació s'extreu l'índex de precipitació de comunitat (CPI), de l'índex específic d'especialització s'extreu l'índex d'especialització de comunitat (CSI) i de l'índex tancat-obert s'extreu l'índex tancat-obert de comunitat (TAOC).
+
+A continuació detallem els passos a seguir per a realitzar aquest càlcul d'indicadors de comunitat.
+
+Carreguem els paquets necessaris a R i obrim el directori. Creem un directori: community_index. Creem el projecte community_index en aquesta carpeta i dues carpetes més a dins. "tables" i "results"
+
+Necessitem les taules:
+
+-   sindex. Una taula que s'obté durant el protocol del càlcul de la fenologia, site index i collated index.
+    - SITE_ID. Identificador de l'itinerari
+    - SPECIES. Identificador de l'espècie
+    - M_Year. Any
+    - Total_NM. Percentatge de fenologia calculat
+    - SINDEX. Valor índex de localitat.
+    
+-   TAO_2022. La taula amb la última versió de l'índex TAO
+    - SPECIES. Identificador de l'espècie
+    - TAO. Valor de l'índex TAO específic
+    - n_itin. Nombre d'itineraris amb què s'ha fet el càlcul
+    
+-   SSI_2022. La taula amb la última versió de l'índex SSI
+    - SPECIES. Identificador de l'espècie
+    - SSI. Valor de l'índex SSI específic
+    - n_itin. Nombre d'itineraris amb què s'ha fet el càlcul
+    
+-   SPI_STI. La Taula amb els indicadors climàtics per a totes les espècies d'Espanya
+    -SPECIES. Identificador de l'espècie
+    -STI.  Valor de l'índex STI específic
+    -SPI.  Valor de l'índex SPI específic
+    
+
+Que incorporem a la carpeta "tables".
+
+```{r carregar llibreries, message = FALSE, warning=FALSE, error= FALSE}
+#Carreguem llibreries
+
+library(readxl)
+library(dplyr) 
+library(tidyverse)
+library(tidyr)
+library(reshape2)
+library(xlsx)
+
+source("workshop_functions.R")
+
+```
+
+### Obrim i preparem la base de dades del CBMS
+
+Aquesta conté els comptatges dels individus de diferents espècies de ropalòcers dins de cada any de mostreig i itinerari, i dins d'aquest en una secció concreta. També conté altra informació més específica recollida a través de la [fitxa de camp](https://www.catalanbms.org/ca/recursos/) del CBMS.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+rm(list=ls()) # codi per netejar l'espai de treball
+
+sindex <- read.table("./tables/sindex.csv", sep = ",", dec = ".", header = T) 
+#Homogeneitzar noms
+sindex <- sindex %>% select(-region, -SOURCE_FILE)
+
+
+```
+
+### Transformació de les dades
+
+Aquí efectuem una transformació de les dades amb una arrel quadrada. Això es fa per a minimitzar l'efecte de tenir espèciesmolt abuants i d'altres que són escasses, ja que sinó el pes que tindrien les abundants seria molt gran.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+# Primer traiem totes les dades on el sindex=0
+
+sites2<-sindex[sindex$SINDEX != 0, ]
+names(sites2)=c("SPECIES", "SITE_ID", "YEAR", "Total_NM", "SINDEX")
+#afegim una columna amb l'arrel quadrada del site index.
+#Ho fem com a mètode de correcció per les grans diferències que pot haver entre les abundàncies d'algunes espècies
+
+sites2$SQ = '^'(sites2$SINDEX,1/2)
+```
+
+## Indicadors d'hàbitat TAO i SSI
+
+Importem aquí les taules amb els diferents indicadors. Ara mateix només són els d'hàbitat.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+TAO <- read.table("./tables/TAO_2025.csv", sep = ",", dec = ".", header = T) 
+SSI <- read.table("./tables/SSI_2025.csv", sep = ",", dec = ".", header = T) 
+
+#Ajuntem les taules de Sindex amb els indicadors
+
+sites_TAO <- merge (sites2, TAO)
+sites_SSI <- merge (sites2, SSI)
+
+```
+
+### REALITZEM ELS CÀLCULS DE L'INDICADOR DE COMUNITAT
+
+El següent pas és multiplicar cada valor transformat (en arrel quadrada) per el seu valor en l'indicador. Si alguna espècie no té un indicador calculat ja haurà quedat fora de l'anàlisi amb la part anterior del codi.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+#Multipliquem 
+
+sites_TAO$S_TAO=sites_TAO$SQ*sites_TAO$TAO
+sites_SSI$S_SSI=sites_SSI$SQ*sites_SSI$SSI
+
+sites_TAO$spyeitin<- paste(sites_TAO$YEAR,sites_TAO$SITE_ID)
+sites_SSI$spyeitin<- paste(sites_SSI$YEAR,sites_SSI$SITE_ID)
+
+```
+
+Fem un sumatori de l'índex d'abundància transformat per cada "comunitat". És a dir, cada combinació de itinerari-any. Fem també el sumatori dels indicadors
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+#TAO
+sumsq<- aggregate(SQ~spyeitin, data=sites_TAO, sum)
+sumtao<- aggregate(S_TAO~spyeitin, data=sites_TAO, sum)
+sitesum_TAO<- merge(sumsq, sumtao) 
+
+#SSI
+sumsq<- aggregate(SQ~spyeitin, data=sites_SSI, sum)
+sumssi<- aggregate(S_SSI~spyeitin, data=sites_SSI, sum)
+sitesum_SSI<- merge(sumsq, sumssi)
+
+rm(sumsq, sumssi, sumtao)
+
+sitesums<-merge(sitesum_TAO, sitesum_SSI)
+rm(sitesum_TAO)
+rm(sitesum_SSI)
+```
+
+Dividim un valor per l'altre creant així els indicadors de comunitat. Ho fem en una mateixa taula per els dos indicadors d'hàbitat i creem així la taula community.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+#creem indicador    
+
+sitesums$csi<- sitesums$S_SSI/sitesums$SQ
+sitesums$taoc<- sitesums$S_TAO/sitesums$SQ
+
+sitesums<-as.data.frame(sitesums)
+
+community_hab<-separate(sitesums, col=spyeitin, into=c("YEAR", "SITE_ID", sep=" "))
+rm(sitesums)
+```
+
+Aquesta taula la simplificarem eliminant columnes innecessàries. N'eliminarem tots els itineraris que no arriben als 4 anys de dades i la prepararem per al càlcul de tendències.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+community_hab$SITE_ID<-as.factor(community_hab$SITE_ID)
+community_hab$YEAR<-as.numeric(community_hab$YEAR)
+community_hab<-data.frame(community_hab$YEAR, community_hab$SITE_ID, community_hab$csi, community_hab$taoc)
+names(community_hab)<-c("YEAR", "SITE_ID", "csi","taoc")
+
+community_hab<-community_hab %>% arrange(SITE_ID)
+
+#eliminar tots els que no tenen mínim 4 anys
+
+library(data.table)
+
+count1<-as.data.frame(community_hab[,1:2])
+count1 <- as.data.table(count1)
+count1<-count1[, .(Count = .N, YEAR = sum(YEAR)), by = "SITE_ID"]
+count1<-data.frame(count1[,1:2])
+names(count1)<-c("SITE_ID", "county")
+
+#mínm de 8 anys
+community_hab<-merge(community_hab,count1,by="SITE_ID")
+community_habt<-filter(community_hab,county>=8) #
+```
+
+-   Iphiclides podalirius. No apareix a l'Spanish atlas, ja que no s'havien separat encara amb I feisthamelii.
+-   Erebia sthennyo + Erebia pandrose. Les dues espècies apareixen juntes amb un sol valor. S'incorpora com a Erebia pandrose
+-   Polyommatus celina. No apareix a l'Spanish Atlas
+-   Lopinga achine no posada degut a que no hi ha poblacions conegudes
+-   Aricia montensis + Aricia agestis. Apareixen juntes. Posat com a A agestis.
+-   Lycaena helle. S'ha inclòs encara que no apareix en l'àmbit de Catalunya. No obstant depèn només d'una població a Lleó i les dades de STI i SPI són diferents que les Andorranes.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+STI_SPI <- read.table("./tables/STI_SPI.csv", sep = ";", dec = ".", header = T) 
+
+#Homogeneitzar noms
+names(STI_SPI)<-c("SPECIES", "IDesp", "STI","SPI")
+
+#Cal tenir totes les bases de dades en text (.txt)
+
+sites_CLI <- merge (sites2, STI_SPI)
+sites_STI <- merge (sites2, STI_SPI)
+sites_SPI <- merge (sites2, STI_SPI)
+
+```
+
+### REALITZEM ELS CÀLCULS DE L'INDICADOR DE COMUNITAT
+
+El següent pas és multiplicar cada valor transformat (en arrel quadrada) per el seu valor en l'indicador. Si alguna espècie no té un indicador calculat ja haurà quedat fora de l'anàlisi amb la part anterior del codi.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+#Multipliquem 
+
+sites_STI$S_STI=sites_STI$SQ*sites_STI$STI
+sites_SPI$S_SPI=sites_SPI$SQ*sites_SPI$SPI
+
+sites_STI$spyeitin<- paste(sites_STI$YEAR,sites_STI$SITE_ID)
+sites_SPI$spyeitin<- paste(sites_SPI$YEAR,sites_SPI$SITE_ID)
+
+```
+
+Fem un sumatori de l'índex d'abundància transformat per cada "comunitat". És a dir, cada combinació de itinerari-any. Fem també el sumatori dels indicadors
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+#STI
+sumsq<- aggregate(SQ~spyeitin, data=sites_STI, sum)
+sumsti<- aggregate(S_STI~spyeitin, data=sites_STI, sum)
+sitesum_STI<- merge(sumsq, sumsti) 
+
+#SPI
+sumsq<- aggregate(SQ~spyeitin, data=sites_SPI, sum)
+sumspi<- aggregate(S_SPI~spyeitin, data=sites_SPI, sum)
+sitesum_SPI<- merge(sumsq, sumspi)
+
+sitesumcli<-merge(sitesum_STI, sitesum_SPI)
+rm(sites_SPI, sites_STI, sites_CLI, sitesum_STI, sitesum_SPI)
+```
+
+Dividim un valor per l'altre creant així els indicadors de comunitat. Ho fem en una mateixa taula per els dos indicadors d'hàbitat i creem així la taula community.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+#creem indicador    
+sitesumcli$cti<- sitesumcli$S_STI/sitesumcli$SQ
+sitesumcli$cpi<- sitesumcli$S_SPI/sitesumcli$SQ
+
+sitesumcli<-as.data.frame(sitesumcli)
+
+community_cli<-separate(sitesumcli, col=spyeitin, into=c("YEAR", "SITE_ID", sep=" "))
+```
+
+Aquesta taula la simplificarem eliminant columnes innecessàries. N'eliminarem tots els itineraris que no arriben als 4 anys de dades i la prepararem per al càlcul de tendències.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+community_cli$SITE_ID<-as.factor(community_cli$SITE_ID)
+community_cli$YEAR<-as.numeric(community_cli$YEAR)
+community_cli<-data.frame(community_cli$YEAR, community_cli$SITE_ID, community_cli$cti, community_cli$cpi)
+names(community_cli)<-c("YEAR", "SITE_ID", "cti","cpi")
+
+community_cli<-community_cli %>% arrange(SITE_ID)
+
+#eliminar tots els que no tenen mínim 4 anys
+
+library(data.table)
+
+count1<-as.data.frame(community_cli[,1:2])
+count1 <- as.data.table(count1)
+count1<-count1[, .(Count = .N, YEAR = sum(YEAR)), by = "SITE_ID"]
+count1<-data.frame(count1[,1:2])
+names(count1)<-c("SITE_ID", "county")
+
+#mínm de 4 anys
+community_cli<-merge(community_cli,count1,by="SITE_ID")
+community_clit<-filter(community_cli,county>=8) #
+```
+
+## RIQUESA I ABUNDÀNCIA
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+library(lubridate)
+
+b_count <- read.table("./tables/cbms_counts.csv", sep=",", dec=".", header=TRUE)
+m_visit <- read.table("./tables/cbms_visits.csv",
+                      sep = ",",
+                      dec = ".",
+                      header = TRUE,
+                      fill = TRUE,
+                      comment.char = "",
+                      stringsAsFactors = FALSE)
+
+b_countG <- b_count %>%
+  rename(SITE_ID = transect_id,
+         SPECIES = species_name,
+         Nindiv = butterfly_count,
+         Secc = section_id)
+
+b_countG <- b_countG %>%
+  # unir només les columnes necessàries de m_visit
+  left_join(
+    m_visit %>% select(bms_visit_id, visit_date),
+    by = "bms_visit_id"
+  ) %>%
+  rename(DATE = visit_date) %>%
+  # generar noves columnes de data i bms_id
+  mutate(year  = year(DATE)) %>%
+  # eliminar la columna temporal bms_visit_id
+  select(-bms_visit_id)
+
+b_countG<-subset(b_countG, b_countG$SITE_ID<10000)
+b_countG <- b_countG %>%
+  rename(YEAR = year,
+         Datam= DATE,
+         IDsecc = Secc)
+
+b_countG$SITE_ID<-as.factor(b_countG$SITE_ID)
+
+treball_IA<-aggregate(Nindiv ~ SPECIES + SITE_ID + IDsecc + YEAR + Datam, data = b_countG, sum) 
+
+
+# Aggregar per espècie i any, excloent espècies amb "sp." al nom
+library(dplyr)
+library(stringr)
+
+# 1. Aggregar per espècie, lloc i any
+treball_IA <- b_countG %>%
+  group_by(SPECIES, SITE_ID, IDsecc, YEAR, Datam) %>%
+  summarise(Nindiv = sum(Nindiv, na.rm = TRUE), .groups = "drop")
+
+# 2. Definim espècies/famílies excloses per riquesa
+excluded_families <- c(
+  "HESPERIDAE", "NYMPHALIDAE", "NYMPHALINAE",
+  "LIBYTHEINAE", "PAPILIONIDAE", "PIERIDAE", 
+  "SATYRIDAE", "LYCAENIDAE"
+)
+
+# 3. Calculem riquesa (nombre d'espècies) excloent espècies no identificades o famílies
+richness <- treball_IA %>%
+  filter(
+    !str_detect(SPECIES, "sp\\."), 
+    !SPECIES %in% excluded_families
+  ) %>%
+  group_by(SITE_ID, YEAR) %>%
+  summarise(richness = n_distinct(SPECIES), .groups = "drop")
+
+# 4. Calculem abundància total (totes les espècies incloses)
+abundance <- treball_IA %>%
+  group_by(SITE_ID, YEAR) %>%
+  summarise(abundance = sum(Nindiv, na.rm = TRUE), .groups = "drop")
+
+# 5. Unim riquesa i abundància
+abu_rich <- richness %>%
+  full_join(abundance, by = c("SITE_ID", "YEAR")) %>%
+  arrange(SITE_ID, YEAR)
+
+
+```
+
+## Community Indicators
+
+Taula que conté els següents camps:
+
+-   SITE_ID: (chr) identificador de l'itinerari amb un número
+-   year: (num) any
+-   cti: (num) Community thermal index per aquell any-itinerari
+-   cpi: (num) Community precipitation index per aquell any-itinerari
+-   csi: (num) Community specialization index per aquell any-itinerari
+-   taoc: (num) Community Tancat-Obert index per aquell any-itinerari
+-   n_year: nombre d'anys totals que té la sèrie fins l'últim any calculat
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+community <- community_hab %>%
+  left_join(community_cli, by = c("SITE_ID", "YEAR")) %>%
+  left_join(abu_rich, by = c("SITE_ID", "YEAR")) %>%
+  arrange(SITE_ID, YEAR) %>%
+  group_by(SITE_ID) %>%
+  mutate(n_year = n()) %>%   # nombre d'anys per cada SITE_ID
+  ungroup()
+community <- community %>%
+  select(-c(county.x, county.y, n_year))
+
+write.table(community, "./results/community.txt", row.names = FALSE)
+
+library(openxlsx)
+
+# 1. Assegurar que totes les columnes siguin vectors simples
+community_clean <- community %>%
+  mutate(across(everything(), ~ if (is.list(.x)) unlist(.x) else .x))
+
+# 2. Comprovar que no hi hagi columnes amb tipus problemàtic
+str(community_clean)
+
+# 3. Opcional: eliminar columnes que no vols exportar
+# community_clean <- community_clean %>% select(-count.x, -count.y, -n_year)
+
+# 4. Escriure a Excel
+write.xlsx(community_clean, "./results/community.xlsx")
+
+```
+
+
+# TENDÈNCIA DE L'INDICADOR
+
+Realitzem aleshores el càlcul de la *tendència* que segueixen els indicadors de comunitat. Farem models linears simples i n'extraurem els coeficients. Ens quedarem amb l'Estimate per veure el pendent i el Pvalor.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+
+# Funció genèrica per calcular tendència lineal per un indicador
+calc_trend <- function(data, var, min_years = 8) {
+  
+  # Comptar anys per SITE_ID
+  years_count <- data %>%
+    group_by(SITE_ID) %>%
+    summarise(n_years = n_distinct(YEAR), .groups = "drop") %>%
+    filter(n_years >= min_years)
+  
+  # Filtrar només els SITE_ID amb suficients anys
+  data <- data %>% filter(SITE_ID %in% years_count$SITE_ID)
+  
+  # Ajustar models lineals per SITE_ID
+  trends <- data %>%
+    group_by(SITE_ID) %>%
+    nest() %>%
+    mutate(
+      model = map(data, ~ lm(reformulate("YEAR", response = var), data = .x)),
+      tidied = map(model, broom::tidy)
+    ) %>%
+    select(SITE_ID, tidied) %>%
+    unnest(tidied) %>%
+    filter(term != "(Intercept)") %>%
+    select(SITE_ID, EST = estimate, PV = p.value) %>%
+    distinct()
+  
+  # Renombrar columnes segons l'indicador
+  names(trends)[2:3] <- paste0(c("EST_", "PV_"), toupper(var))
+  
+  return(trends)
+}
+
+# Indicadors a analitzar
+vars <- c("taoc", "csi", "cpi", "cti", "richness", "abundance")
+
+# Calcular tendències per tots els indicadors
+trend_list <- lapply(vars, function(v) calc_trend(community, v))
+
+# Unir totes les tendències en una sola taula
+all_trends <- reduce(trend_list, full_join, by = "SITE_ID")
+
+
+
+
+```
+
+
+### Community trend
+
+Taula que conté els següents camps:
+
+-   SITE_ID (chr) identificador de l'itinerari amb un número
+-   Est_CPI (num): valor de l'estimate del model linear efectuat per al CPI d'aquell itinerari
+-   PV_CPI (num): pvalor del model linear calculat pel CPI d'aquell itinerari
+-   Est_CTI (num): valor de l'estimate del model linear efectuat per al CTI d'aquell itinerari
+-   PV_CTI (num): pvalor del model linear calculat pel CTI d'aquell itinerari
+-   Est_CSI (num): valor de l'estimate del model linear efectuat per al CSI d'aquell itinerari
+-   PV_CSI (num): pvalor del model linear calculat pel CSI d'aquell itinerari
+-   Est_TAOC (num): valor de l'estimate del model linear efectuat per al TAOC d'aquell itinerari
+-   PV_TAOC (num): pvalor del model linear calculat pel TAOC d'aquell itinerari
+-   Status_CPI: Tendència de l'indicador CPI de l'itinerari (increment, regressió o incerta)
+-   Status_CTI: Tendència de l'indicador CTI de l'itinerari (increment, regressió o incerta)
+-   Status_CSI: Tendència de l'indicador CSI de l'itinerari (increment, regressió o incerta)
+-   Status_TAOC: Tendència de l'indicador TAOC de l'itinerari (increment, regressió o incerta)
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+library(dplyr)
+library(purrr)
+library(broom)
+library(tidyr)
+
+# Vector amb els noms exactes de les columnes a community
+indicators <- c("cpi", "cti", "csi", "taoc", "richness", "abundance")
+
+# Crear una llista buida per guardar els resultats
+coef_list <- list()
+
+for(ind in indicators) {
+  est_col <- paste0("EST_", toupper(ind))  # per exemple EST_CPI
+  pv_col  <- paste0("PV_", toupper(ind))   # per exemple PV_CPI
+  
+  # Fer model lineal per a cada SITE_ID
+  temp <- community %>%
+    group_by(SITE_ID) %>%
+    nest() %>%
+    mutate(
+      model = map(data, ~ lm(.x[[ind]] ~ YEAR, data = .x)),
+      tidied = map(model, ~ broom::tidy(.x))
+    ) %>%
+    select(SITE_ID, tidied) %>%
+    unnest(tidied) %>%
+    filter(term != "(Intercept)") %>%
+    select(SITE_ID, EST = estimate, PV = p.value) %>%
+    rename(!!est_col := EST, !!pv_col := PV)
+  
+  coef_list[[ind]] <- temp
+}
+
+# Combinar tots els resultats en una sola taula
+community_trends <- reduce(coef_list, full_join, by = "SITE_ID")
+
+# Assignar els estats de la tendència (increment, regressió, estable)
+assign_status <- function(EST, PV) {
+  case_when(
+    EST < 0 & PV < 0.05 ~ "Regressió",
+    EST > 0 & PV < 0.05 ~ "Increment",
+    TRUE                ~ "Estable"
+  )
+}
+
+for(ind in indicators) {
+  est_col <- paste0("EST_", toupper(ind))
+  pv_col  <- paste0("PV_", toupper(ind))
+  status_col <- paste0("Status_", toupper(ind))
+  
+  community_trends <- community_trends %>%
+    mutate(
+      !!status_col := assign_status(.data[[est_col]], .data[[pv_col]])
+    )
+}
+
+
+write.table(community_trends, "./results/community_trends.txt", row.names = FALSE)
+library(openxlsx)
+
+# Convertir totes les columnes de tipus list a numeric/character
+community_trends_clean <- community_trends %>%
+  mutate(across(everything(), ~ if(is.list(.)) unlist(.) else .))
+
+# Escriure el fitxer
+write.xlsx(community_trends_clean, "./results/community_trends.xlsx", rowNames = FALSE)
+
+```

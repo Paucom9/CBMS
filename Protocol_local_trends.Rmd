@@ -1,0 +1,834 @@
+---
+title: "Protocol tendències locals i extincions"
+author: "Ubach, A, Pla-Narbona, C., Stefanescu, C.."
+date: "22/12/2021"
+output: html_document
+---
+![](./images/logo_museu.png){width=15%}
+
+![](./images/logo_CBMS.jpg){width=15%}
+
+
+El [CBMS](https://www.catalanbms.org/ca/) (Catalan Butterfly Monitoring Scheme) és un programa de seguiment de papallones diürnes basat en la repetició setmanal de censos visuals al llarg de transsectes fixos, per tal de relacionar-los posteriorment amb diferents factors ambientals. La utilització de les papallones en aquests projectes respon al seu contrastat caràcter bioindicador, a la seva popularitat i carisma, i al fet d'haver experimentat, en temps recents, regressions generalitzades arreu d'Europa.
+
+El CBMS recull informació precisa de l'abundància d'espècies de ropalòcers en diferents tipus d'hàbitat,ja que els comptatges es diferencien a nivell de secció dins de cada itinerari. Aquestes dades permeten calcular diversos índexs que detallen les preferències d'una espècie per a cada ambient i que, després, formen la base per al càlcul dels indicadors multiespecífics d'hàbitat.
+
+A nivell de cada itinerari, s'obtenen els índexs d’abundància que informen de l'abundància relativa anual d'una espècie en aquella localitat. Aquests índexs es calculen a partir de la suma dels comptatges a l'itinerari. En aquells casos en què ha estat possible estimar la corba de vol regional mitjançant el model GAM, els índexs anuals inclouen els comptatges reals i els imputats per a les setmanes perdudes. En cas contrari, només inclouen els comptatges reals. D'altra banda, si les dades reals corresponen a un percentatge molt baix (menor al 10%), es considera que el model no és prou fiable per a fer un càlcul d’un índex d’abundància (l'espècie, en aquest cas, apareix com a no avaluada).
+
+A les fitxes d'espècie per itinerari es mostren els índexs anuals estandarditzats a una distància fixa de 100 m de transsecte per facilitar la comparació entre poblacions de diferents itineraris. Els valors d'abundància d'una espècie que apareixen a la taula general a les fitxes d'espècie i a les fitxes d'itinerari corresponen a mitjanes per a tots els anys disponibles.
+
+Al CBMS es calcula un únic índex anual d'abundància per espècie, que reflecteix l'èxit de l'espècie al llarg de tot el període de vol comprès dins de les 30 setmanes oficials de la temporada. Si la fenologia és suficientment clara com per detectar generacions discretes, els índexs anuals d'abundància es podrien calcular per separat per a cada generació. No obstant, donada la complexitat que presenten les fenologies als diferents climes del territori català, es descarta aquesta opció per als càlculs actuals. Existeix, a més a més, una certa variabilitat segons les condicions meteorològiques de la temporada i són freqüents les espècies bivoltines amb una tercera generació parcial, així com les polivoltines amb un nombre variable de generacions. En altres projectes de BMS, com l’UKBMS al Regne Unit, sí que es distingeixen índexs anuals per generació, i en les espècies bivoltines s'utilitza únicament l'índex de la segona generació, generalment més abundant.
+
+Els índexs d'abundància local s'utilitzen per calcular les tendències locals de les espècies als diferents itineraris. Aquestes tendències s'estimen a partir d’una regressió lineal entre el logaritme de l'índex local (log [IA+1]) i l'any, sempre que la sèrie temporal disposi de vuit o més anys durant els quals l'espècie hagi aparegut com a mínim quatre anys seguits. En cas contrari, l'espècie apareix com a "No avaluada". A les diferents fitxes, les tendències locals apareixen classificades segons el pendent de la recta de regressió i el seu nivell de significació.
+
+Els gràfics de tendències inclouen sèries temporals no actuals quan una estació ja fa temps que no és activa. En tals casos, la tendència fa referència al període de mostreig disponible en aquella estació, sense indicar en quin estat es troba l’espècie actualment. 
+A continuació detallem els passos a seguir per a realitzar aquest càlcul de tendències locals, així com el posterior càlcul les extincions.
+
+El CBMS usa uns criteris per a designar les categories finals de les tendències:
+
+* Si l'itinerari no arriba als 8 anys: *STI* (sèrie temporal insuficient).
+* Si es compleix però l'espècie apareix en menys del 50% dels anys: *Ocasional*
+* Si apareix en més es calcula una tendència, a la qual s'assignen les categories *Increment, Regressió o Estable*.
+* Si l'espècie ha deixat d'aparèixer amb els criteris de 4 anys present i després almenys 4 anys absent: *Extingida*.
+* Si l'espècie reapareix després d'haver estat extingida: es calcularà una tendència incloent aquesta dada nova.
+
+Carreguem els paquets necessaris a R i obrim el directori. Creem un directori: local_trends.
+Creem el projecte local_trends en aquesta carpeta i dues carpetes més a dins. "tables" i "results"
+
+Necessitem les taules:
+
+*	sindex. Una taula que s'obté durant el protocol del càlcul de la fenologia, site index i collated index.
+
+Que incorporem a la carpeta “tables”.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+#Carreguem llibreries
+
+library(tinytex)
+library(readxl)
+library(dplyr) 
+library(tidyverse)
+library(tidyr)
+library(reshape2)
+library(xlsx)
+
+```
+
+### OBRIM I PREPAREM LA TAULA SITES
+
+Aquesta conté els comptatges dels individus de diferents espècies de ropalòcers dins de cada any de mostreig i itinerari, i dins d'aquest en una secció concreta. També conté altra informació més específica recollida a través de la [fitxa de camp](https://www.catalanbms.org/ca/recursos/) del CBMS.
+
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+ rm(list=ls())
+
+sites <- read.table("./tables/sindex.csv", sep = ",", dec = ".", header = T) 
+
+sites <- sites %>% select(-region, -SOURCE_FILE)
+
+#Usem solament els índexs d'abundància majors que zero i aquells que tenen un mínim d'un 10% de la fenologia observada a l'itinerari. Això implica treure de la columna TOTAL_NM, que és la que dóna el perecentatge de corba fenològica mostrejat segons el model GAM.
+
+sindex<-sites %>% dplyr::filter(sites$SINDEX > 0)
+
+```
+
+La idea serà crear una taula final que anirem omplint a mesura que anem fent passos. En aquesta taula final hi haurà una columna buida "Status" i un dindex d'abundància promig de cada combinació espècie_itinerari al llarg dels anys que ha aparegut. 
+
+
+````{r,message=FALSE, warning=FALSE, error=FALSE}
+
+#primer creem la taula final i l'anirem omplint aquesta taula es dirà primer sindex_avg
+
+names(sindex)<- c("IDESP", "SITE_ID", "YEAR", "TOTAL_NM", "SINDEX")
+sindex_avg<-aggregate(SINDEX~SITE_ID+IDESP, data=sindex, mean)
+sindex_avg['Status']<-NA
+sindex_avg$Site_SP<-paste(sindex_avg$SITE_ID, "_", sindex_avg$IDESP, sep = "") 
+
+sindex_avg<-filter(sindex_avg,Site_SP!="74_piepna")
+sindex_avg<-filter(sindex_avg,Site_SP!="101_piepna")
+sindex_avg<-filter(sindex_avg,Site_SP!="60_piepna")
+sindex_avg<-filter(sindex_avg,Site_SP!="61_piepna")
+sindex_avg<-filter(sindex_avg,Site_SP!="8_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="194_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="109_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="127_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="130_papipo")
+
+````
+
+S’utilitzaran estacions amb un mínim de 8 anys de dades. Totes les que quedin fora se’ls aplicarà la categoria “S.T.I.” - Sèrie Temporal Insuficient. 
+
+````{r,message=FALSE, warning=FALSE, error=FALSE}
+
+#DISPOSAR DE LA COLUMNA AMB LES COMBINACIONS SITE_ID/IDESP
+
+sindex$Site_SP<-paste(sindex$SITE_ID, "_", sindex$IDESP, sep = "") 
+
+sindex<-filter(sindex,Site_SP!="74_piepna")
+sindex<-filter(sindex,Site_SP!="101_piepna")
+sindex<-filter(sindex,Site_SP!="60_piepna")
+sindex<-filter(sindex,Site_SP!="61_piepna")
+sindex_avg<-filter(sindex_avg,Site_SP!="8_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="194_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="109_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="127_papipo")
+sindex_avg<-filter(sindex_avg,Site_SP!="130_papipo")
+
+
+count_years <- sindex %>%
+  group_by(SITE_ID) %>%
+  summarise(countYEAR = n_distinct(YEAR), .groups = "drop")
+
+# afegim a sindex i filtrem
+sindex8 <- sindex %>%
+  left_join(count_years, by = "SITE_ID") %>%
+  filter(countYEAR >= 8)
+
+#Aquí posarem a la taula sindex_avg l'estat STI per a les que no arriben als 8 anys
+
+# Afegim a sindex_avg el nombre d'anys disponibles per itinerari
+sindex_sti <- sindex_avg %>%
+  left_join(years_per_site, by = "SITE_ID") %>%
+  mutate(
+    Status = if_else(is.na(Status) & n_years < 8, "S.T.I.", Status)
+  ) %>%
+  select(-n_years) # opcional: si no vols conservar la columna auxiliar
+# cambiem el nom de la taula a sindex_sti, que incorpora la categoria Sèrie Temporal Insuficient
+
+````
+
+
+#### Seleccionem només aquelles combinacions lloc_espècie que tinguin almenys el 50% d'anys amb dades
+
+La tendència local d’una espècie es calcularà sempre i quant tingui com aparegui almenys el 50% dels anys que s'ha estudiat un itinerari. Totes les que no ho compleixin se’ls aplicarà la categoria “Ocasional”. La idea darrere d’això és que el concepte de població  pot aplicar-se per a espècies que apareixen de forma esporàdica encara en un sentit estricte i teòric del concepte, però que s'ha de posar un llindar a partir del qual sabem que hi ha prou dades per a calcular una tendència.  
+
+````{r,message=FALSE, warning=FALSE, error=FALSE}
+# Anys amb dades per combinació lloc-espècie
+years_per_site_sp <- sindex %>%
+  group_by(Site_SP) %>%
+  summarise(n_years_sp = n_distinct(YEAR), .groups = "drop")
+
+# Anys totals amb dades per itinerari
+years_per_site <- sindex %>%
+  group_by(SITE_ID) %>%
+  summarise(n_years = n_distinct(YEAR), .groups = "drop")
+
+sindex8 <- sindex8 %>%
+  mutate(Status = NA_character_)
+
+# Ajuntem i calculem percentatge
+sindex8SP <- sindex8 %>%
+  left_join(years_per_site_sp, by = "Site_SP") %>%
+  left_join(years_per_site,   by = "SITE_ID") %>%
+  mutate(
+    percent = n_years_sp / n_years,
+    Status = if_else(percent < 0.5, "Ocasional", Status)
+  )
+
+````
+
+
+Un cas a BANDA són les espècies Biennals, com Erebia euryale. Per aquestes hauria de funcionar diferent.  
+
+* no incorporat al codi, queda pendent.
+
+### ESTAT ACTUAL
+
+La definició d’extinció depèn de tot un conjunt de factors que no es tenen en compte amb els itineraris BMS, com és la detectabilitat o la capacitat de colonització, que es tenen en compte en els anomenats Occupancy models. No obstant, es poden establir criteris per a definir els esdeveniments locals d’extinció i colonització, que serveixen per a incorporar com a categoria en el sí de les tendències locals. Això es pot explicar en un paràgraf al web per justificar tot aquest apartat. Posteriorment es podrà mirar, realitzant l’ús d’aquests models, la correspondència amb els criteris que s’usin per a dades crues. 
+
+-	Aquesta definició s’aplicarà de forma paral·lela als criteris de càlcul de tendències locals i un cop realitzat es farà una comparativa, associant a cada població al binomi Extingida/Resident.
+
+-	S’utilitzaran, doncs, només les poblacions on es pugui calcular una tendència local atenent als criteris anteriorment esmentats.
+
+-	S’utilitzarà la taula Sindex, que ja compta amb indicadors locals anuals calculats amb la mínima ocurrència=2. 
+
+Tenint tot això en compte prosseguirem a fer el càlcul de les espècies extingides en cada itinerari. 
+
+Necessitem la mateixa taula "sindex8SP" però afegint també els anys en què els comptatges han sigut = 0, li direm "sindex0SP" i els passos previs seran similars:
+
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+
+names(sites)<- c("IDESP", "SITE_ID", "YEAR", "TOTAL_NM", "SINDEX")
+
+sindex0 <- sites %>%
+  filter(TOTAL_NM > 0.10) %>%
+  transmute(
+    IDESP,
+    SITE_ID,
+    YEAR,
+    SINDEX,
+    Site_SP = paste(SITE_ID, IDESP, sep = "_")
+  )
+
+# anys totals per site
+years_per_site <- sindex0 %>%
+  distinct(SITE_ID, YEAR) %>%
+  count(SITE_ID, name = "n_years")
+
+# filtrar ≥8 anys
+sindex0 <- sindex0 %>%
+  left_join(years_per_site, by = "SITE_ID") %>%
+  filter(n_years >= 8)
+
+detect_extinction <- function(df) {
+  presence <- ifelse(df$SINDEX > 0, 1, 0)
+  r <- rle(presence)
+  
+  blocks <- data.frame(
+    value = r$values,
+    length = r$lengths
+  )
+  
+  # 1. Almenys 4 anys seguits amb presència
+  if (!any(blocks$value == 1 & blocks$length >= 4)) return("No resident")
+  
+  first_resident <- which(blocks$value == 1 & blocks$length >= 4)[1]
+  
+  after_resident <- blocks[(first_resident + 1):nrow(blocks), , drop = FALSE]
+  ext_block <- which(after_resident$value == 0 & after_resident$length >= 4)
+  
+  if (length(ext_block) == 0) return("Resident")
+  
+  ext_pos <- first_resident + ext_block[1]
+  
+  after_ext <- blocks[(ext_pos + 1):nrow(blocks), , drop = FALSE]
+  
+  # ⚠ comprovar si after_ext està buit
+  if (nrow(after_ext) == 0) {
+    return("Extingida")
+  }
+  
+  # si hi ha algun bloc de presència després
+  if (any(after_ext$value == 1, na.rm = TRUE)) {
+    return("Ocasional")
+  }
+  
+  return("Extingida")
+}
+
+extinction_results <- sindex0 %>%
+  arrange(Site_SP, YEAR) %>%
+  group_by(Site_SP) %>%
+  summarise(
+    StatusExt = detect_extinction(cur_data()),
+    .groups = "drop"
+  )
+
+
+# Incorporar la informació a la taula sindex_sti
+sindex_ext <- sindex_sti %>%
+  left_join(extinction_results, by = "Site_SP") %>%
+  mutate(Status = coalesce(StatusExt, Status)) %>%
+  select(-StatusExt)
+
+
+  
+```
+
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+
+# Afegim percentatge d'anys amb dades a sindex_ext
+sindex_oca <- sindex_ext %>%
+  left_join(years_per_site_sp, by = "Site_SP") %>%     # n_years_sp: anys amb presència
+  left_join(years_per_site, by = "SITE_ID") %>%        # n_years: total anys de l'itinerari
+  mutate(
+    percent = n_years_sp / n_years,
+    Status = if_else(is.na(Status) & percent < 0.5, "Ocasional", Status)
+  ) %>%
+  select(-n_years_sp, -n_years)  # opcional: neteja columnes auxiliars
+
+
+```
+
+
+### CÀLCUL DE TENDÈNCIES LOCALS AMB LA BASE DE DADES RESTANT
+
+Hem obtingut les espècies extingides en cada itinerari. Tot seguit crearem la taula  que filtrarà aquelles espècies residents de les quals podem calcular-ne una tendència local:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(broom)
+
+# Suposem que sindex_trend és la taula filtrada amb percent >= 0.5
+
+localtrend <- sindex_trend %>%
+  group_by(Site_SP) %>%
+  nest() %>%  # crea una columna "data" amb cada conjunt d'anys per Site_SP
+  mutate(
+    model = map(data, ~ lm(SINDEX ~ YEAR, data = .x)),  # ajusta model lineal
+    tidied = map(model, ~ broom::tidy(.x))             # treu coeficients en format net
+  ) %>%
+  select(Site_SP, tidied) %>%
+  unnest(tidied) %>%
+  filter(term != "(Intercept)") %>%   # descartem l'intercept
+  select(Site_SP, EST = estimate, SE = std.error, T = statistic, PV = p.value)
+
+
+
+
+
+#Creem una taula buida per a posar els resultats
+localtrend<-as.data.frame(matrix(ncol=5,nrow=0))
+names(localtrend)<-c("Site_SP", "EST","SE", "T", "PV")
+
+# fem el loop que realitza models linears per a cada itinerari i n'extreu els coeficients
+# triga una mica, fa més de 4000 models linears
+
+for (i in 1:length(sindex_trend$Site_SP)){
+  nom <-sindex_trend$Site_SP[i]
+  temp<-subset(sindex_trend, Site_SP==nom)
+  slope<-summary(lm(temp$SINDEX ~ temp$YEAR))$coefficients
+  slope <- slope[-c(1), ]
+  slope<-t(slope)
+  temp<-cbind(nom, slope)
+  temp<-as.data.frame(temp)
+  names(temp)<-c("Site_SP","EST","SE","T","PV")
+  localtrend<-rbind(localtrend,temp)
+  
+}
+
+localtrend<-localtrend[!duplicated(localtrend),]
+
+#ens ho ha posat tot com a chr, però són valors numèrics
+localtrend$EST<-as.numeric(localtrend$EST)
+localtrend$SE<-as.numeric(localtrend$SE)
+localtrend$'T'<-as.numeric(localtrend$'T')
+localtrend$PV<-as.numeric(localtrend$PV)
+
+```
+
+#### Assignar categories
+
+Aquí assignem segons el resultat dels models linears una categoria a la tendència
+
+* Regressió: Estimate < 0 & P-Valor < 0.05:  declivi significatiu
+* Increment: Estimate > 0 & P-Valor < 0.05: augment significatiu
+* Estable: PV > 0.05 & StdError < 0.05: tendència no significativa
+
+La categoria *Incerta* no s'aplica en el càlcul de tendències locals. Aquesta es reserva de moment als models regionals que incorporen uns intervals de confiança obtingts a partir d'un mètode bootstrap. Resta pendent aplicar models Bayesians o GLMs amb distribució binomial negativa per resoldre la possibilitat que una tendència es mantingui incerta en una població. Això depèn també de l'estocasticitat demogràfica que tenen moltes espècies. 
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+#Per assignar una categoria tenim un criteri que té en compte P-VALOR, EST i SE
+
+localtrend<-localtrend %>%
+  mutate(Trend = case_when(
+    EST < 0 & PV < 0.05 ~ "Regressió",
+    EST > 0 & PV < 0.05 ~ "Increment",
+    PV > 0.05 ~"Estable"))
+  
+```
+
+#### Unir resultats de tendències locals amb la bdd general
+
+Ara unirem les tendències locals, primer amb la taula pop_status que contempla totes aquelles poblacions Residents/Extingides, i després amb la taula Sinex_pob, que agultina totes les poblacions extistents a la taula sindex i per tant a la xarxa CBMS.
+
+Totes aquelles poblacions de les quals no s'ha pogut calcular una tendència ni es troben en la categoria extingida, però de les quals hi ha valors a la taula de índexs locals (SINDEX) són poblacions que no tenen una sèrie temporal suficient com per a estimar l'estat de la població. Per tant, s'assignarà una categoria "S.T.Insuficient"
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+
+#obtenir el total de poblacions
+
+pop_trends<-full_join(sindex_oca, localtrend, by="Site_SP")
+
+pop_trends<-pop_trends %>%  mutate(Status = replace(Status, Trend == "Increment", "inc"))
+pop_trends<-pop_trends %>%  mutate(Status = replace(Status, Trend == "Regressió", "reg"))
+pop_trends<-pop_trends %>%  mutate(Status = replace(Status, Trend == "Estable", "est"))
+pop_trends<-pop_trends %>%  mutate(Status = replace(Status, StatusExt == "Extingida", "ext"))
+pop_trends$Status[pop_trends$Status == "Ocasional"] <- "oca"
+pop_trends$Status[pop_trends$Status == "S.T.I."] <- "sti"
+
+pop_trends_web<-pop_trends %>% select(1,2,3,4,5,6,7,8,10,11,12,13)
+
+names(pop_trends_web)=c("itin_esp", "IDitin", "IDesp", "SINDEX", "Status", "countYEAR", "StatusExt", "countYEARSP", "EST", "SE", "T", "PV")
+
+names_CBMS <- read_excel("tables/names_CBMS.xlsx")
+pop_trends_web<-merge(pop_trends_web, names_CBMS, by="IDesp")
+
+```
+
+Finalment, preparem la taula per a penjar-la a la web, afegint la mitjana de les abundàncies de cada espècie a cada itinerari.
+
+* Site_SP ´combinació site i sp
+* SITE_ID itinerrari
+* IDESP espècie
+* SINDEX site index promig d'una espècie en un itinerari (el valor que aniria a les taules web)
+* Status l'estat final a partir de tots aquests criteris que hem dit
+* countYEAR: el comptatge d'anys de l'itinerari
+* countYEARSP: el nombre d'anys que ha aparegut una espècie en un itinerari
+* percent: divisió dels 2 anteriors, que dóna aquest percentatge d'anys
+* següents 4 columnes: per aquelles que s'ha calculat una tendència, l'Estimate, Standard error, T-value i P Value.
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(broom)
+
+#----------------------------------------
+# 1. Llegim i preparem la taula de dades
+#----------------------------------------
+sites <- read.table("./tables/sindex.csv", sep = ",", dec = ".", header = TRUE) %>%
+  select(-region, -SOURCE_FILE)
+
+# Canviem noms de columnes per consistència
+names(sites) <- c("SPECIES", "SITE_ID", "YEAR", "TOTAL_NM", "SINDEX")
+
+# Afegim combinació SITE + SPECIES
+sites <- sites %>% mutate(Site_SP = paste(SITE_ID, SPECIES, sep = "_"))
+
+# Eliminem combinacions concretes
+exclude <- c("74_piepna","101_piepna","60_piepna","61_piepna",
+             "8_papipo","194_papipo","109_papipo","127_papipo","130_papipo")
+sites <- sites %>% filter(!Site_SP %in% exclude)
+
+#----------------------------------------
+# 2. Comptem anys amb dades per SITE_ID i per SITE_SPECIES
+#----------------------------------------
+years_per_site <- sites %>%
+  group_by(SITE_ID) %>%
+  summarise(n_years = n_distinct(YEAR), .groups = "drop")
+
+years_per_site_sp <- sites %>%
+  group_by(Site_SP) %>%
+  summarise(n_years_sp = n_distinct(YEAR), .groups = "drop")
+
+#----------------------------------------
+# 3. Filtre de ≥8 anys d’itinerari
+#----------------------------------------
+sindex8 <- sites %>%
+  left_join(years_per_site, by = "SITE_ID") %>%
+  filter(n_years >= 8)
+
+#----------------------------------------
+# 4. Taula amb Status inicial = S.T.I. si <8 anys
+#----------------------------------------
+sindex_avg <- sindex8 %>%
+  group_by(SITE_ID, SPECIES) %>%
+  summarise(SINDEX = mean(SINDEX, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    Status = NA,
+    Site_SP = paste(SITE_ID, SPECIES, sep = "_")
+  )
+
+sindex_sti <- sindex_avg %>%
+  left_join(years_per_site, by = "SITE_ID") %>%
+  mutate(Status = if_else(n_years < 8, "S.T.I.", Status)) %>%
+  select(-n_years)
+
+#----------------------------------------
+# 5. Assignem “Ocasional” per percentatge <0.5
+#----------------------------------------
+sindex_ext <- sindex_sti %>%
+  left_join(years_per_site_sp, by = "Site_SP") %>%
+  left_join(years_per_site, by = "SITE_ID") %>%
+  mutate(
+    percent = n_years_sp / n_years,
+    Status = if_else(is.na(Status) & percent < 0.5, "Ocasional", Status)
+  ) %>%
+  select(-n_years_sp, -n_years)
+
+#----------------------------------------
+# 6. Detectem extincions locals
+#----------------------------------------
+# Funció per detectar extincions
+detect_extinction <- function(df) {
+  pres_abs <- ifelse(df$SINDEX > 0, 1, 0)
+  n <- length(pres_abs)
+  anterior <- NA
+  comptP <- 0
+  comptE <- 0
+  
+  for (i in seq_along(pres_abs)) {
+    if (pres_abs[i] == 1) {
+      comptP <- comptP + 1
+      comptE <- 0
+      if (comptP >= 4) anterior <- "P"
+    } else {
+      comptP <- 0
+      comptE <- comptE + 1
+      # Afegim comprovació de no-NA abans de comparar
+      if (!is.na(anterior) && comptE >= 4 && anterior == "P") {
+        anterior <- "E"
+      }
+    }
+  }
+  
+  if (!is.na(anterior) && anterior == "E") return("Extingida")
+  if (any(pres_abs == 1)) return(NA) # queda com a resident si no compleix extinció
+  return(NA)
+}
+
+
+extinction_results <- sindex8 %>%
+  arrange(Site_SP, YEAR) %>%
+  group_by(Site_SP) %>%
+  summarise(
+    StatusExt = detect_extinction(cur_data()),
+    .groups = "drop"
+  )
+
+# Integrar StatusExt amb sindex_ext
+sindex_ext <- sindex_ext %>%
+  left_join(extinction_results, by = "Site_SP") %>%
+  mutate(Status = coalesce(StatusExt, Status)) %>%
+  select(-StatusExt)
+
+#----------------------------------------
+# 7. Filtre de sindex_trend per espècies amb percent ≥0.5 i residents
+#----------------------------------------
+# Assegurem que tinguem els anys
+sindex_trend <- sindex8SP %>%
+  filter(percent >= 0.5) %>%
+  select(Site_SP, YEAR, SINDEX)   # <-- mantenim YEAR i SINDEX per als models
+
+
+localtrend <- sindex_trend %>%
+  group_by(Site_SP) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(SINDEX ~ YEAR, data = .x)),
+    tidied = map(model, ~ broom::tidy(.x))
+  ) %>%
+  select(Site_SP, tidied) %>%
+  unnest(tidied) %>%
+  filter(term != "(Intercept)") %>%
+  select(Site_SP, EST = estimate, SE = std.error, T = statistic, PV = p.value)
+
+pop_trends <- sindex_ext %>%
+  left_join(localtrend, by = "Site_SP") %>%
+  mutate(
+    Status = case_when(
+      Trend == "Increment" ~ "inc",
+      Trend == "Regressió"  ~ "reg",
+      Trend == "Estable"    ~ "est",
+      Status == "Extingida" ~ "ext",
+      Status == "Ocasional" ~ "oca",
+      Status == "S.T.I."    ~ "sti",
+      TRUE ~ Status
+    )
+  )
+
+# -------------------------------
+# 4. Taula final
+# -------------------------------
+pop_trends_web <- pop_trends %>%
+  select(Site_SP, SITE_ID, SPECIES, SINDEX, Status, n_years, EST, SE, T, PV)
+
+
+write.table(pop_trends_web,"./results/populations_ESP.txt", row.names = FALSE)
+write.xlsx(pop_trends_web,"./results/populations_ESP.xlsx", row.names = FALSE)
+write.csv(pop_trends_web, "./results/populations_ESP.csv", row.names=FALSE)
+
+
+
+
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(broom)
+
+#-------------------------------
+# 1. Preparació de la taula bàsica
+#-------------------------------
+
+sindex0 <- sites %>%
+  filter(TOTAL_NM > 0.10) %>%
+  transmute(
+    SPECIES,
+    SITE_ID,
+    YearNum = as.numeric(YEAR),   # assegurar que la columna any és numèrica
+    SINDEX,
+    Site_SP = paste(SITE_ID, SPECIES, sep = "_")
+  )
+
+#-------------------------------
+# 2. Comptar anys per lloc i lloc+espècie
+#-------------------------------
+
+years_per_site <- sindex0 %>%
+  group_by(SITE_ID) %>%
+  summarise(n_years = n_distinct(YearNum), .groups = "drop")
+
+years_per_site_sp <- sindex0 %>%
+  group_by(Site_SP) %>%
+  summarise(n_years_sp = n_distinct(YearNum), .groups = "drop")
+
+#-------------------------------
+# 3. Seleccionar itineraris amb almenys 8 anys de dades
+#-------------------------------
+
+sindex8 <- sindex0 %>%
+  left_join(years_per_site, by = "SITE_ID") %>%
+  filter(n_years >= 8)
+
+#-------------------------------
+# 4. Calcular percentatge d'anys amb dades i assignar Ocasional
+#-------------------------------
+
+sindex8SP <- sindex8 %>%
+  left_join(years_per_site_sp, by = "Site_SP") %>%
+  mutate(
+    percent = n_years_sp / n_years,
+    Status = if_else(percent < 0.5, "Ocasional", "Resident")
+  )
+
+#-------------------------------
+# 5. Funció per detectar extincions locals
+#-------------------------------
+detect_extinction <- function(df) {
+  df <- df[order(df$YearNum), ]
+  comptP <- 0
+  comptE <- 0
+  anterior <- NA_character_
+  StatusSeq <- c()
+  
+  for(i in df$SINDEX) {
+    if(i > 0) {
+      comptP <- comptP + 1
+      comptE <- 0
+      if(comptP >= 4) anterior <- "P"
+    } else {
+      comptE <- comptE + 1
+      comptP <- 0
+      if(comptE >= 4 && !is.na(anterior) && anterior == "P") anterior <- "E"
+    }
+    StatusSeq <- c(StatusSeq, anterior)
+  }
+  
+  # Comprovem si l'espècie està extingida al final
+  if("E" %in% StatusSeq && all(df$SINDEX[(length(StatusSeq)-3):length(StatusSeq)] == 0)) {
+    return("Extingida")
+  } else if(any(df$SINDEX > 0) && mean(df$SINDEX > 0) < 0.5) {
+    return("Ocasional")
+  } else {
+    return(NA_character_)
+  }
+}
+
+extinction_results <- sindex8SP %>%
+  group_by(Site_SP) %>%
+  summarise(
+    StatusExt = detect_extinction(cur_data()),
+    .groups = "drop"
+  )
+
+sindex_ext <- sindex8SP %>%
+  left_join(extinction_results, by = "Site_SP") %>%
+  mutate(
+    Status = coalesce(StatusExt, Status)
+  )
+
+#-------------------------------
+# 6. Calcular tendències locals per espècies residents
+#-------------------------------
+
+sindex_trend <- sindex_ext %>%
+  filter(Status == "Resident")
+
+localtrend <- sindex_trend %>%
+  group_by(Site_SP) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ lm(SINDEX ~ YearNum, data = .x)),
+    tidied = map(model, ~ broom::tidy(.x))
+  ) %>%
+  select(Site_SP, tidied) %>%
+  unnest(tidied) %>%
+  filter(term != "(Intercept)") %>%
+  select(Site_SP, EST = estimate, SE = std.error, T = statistic, PV = p.value) %>%
+  mutate(
+    Trend = case_when(
+      EST < 0 & PV < 0.05 ~ "Regressió",
+      EST > 0 & PV < 0.05 ~ "Increment",
+      PV >= 0.05          ~ "Estable"
+    )
+  )
+
+#-------------------------------
+# 7. Assignar la categoria final a Status
+#-------------------------------
+sindex_ext_clean <- sindex_ext %>%
+  select(-YearNum, -SINDEX) %>%   # eliminem columnes per any
+  distinct(Site_SP, .keep_all = TRUE)  # deixem només 1 fila per Site_SP
+
+localtrend <- localtrend %>%
+  filter(!is.na(Trend))
+
+pop_trends <- sindex_ext_clean %>%
+  left_join(localtrend, by = "Site_SP") %>%
+  mutate(
+    # 1) Ocasional sempre prioritari
+    Trend = case_when(
+      Status == "Ocasional" ~ "Ocasional",
+
+      # 2) Si Trend és NA, però hi ha StatusExt → usar StatusExt
+      is.na(Trend) & !is.na(StatusExt) ~ StatusExt,
+
+      # 3) En qualsevol altre cas conservar Trend original
+      TRUE ~ Trend
+    )
+  )
+
+pop_trends <- pop_trends %>%
+  filter(!is.na(Trend))
+pop_trends <- pop_trends %>%
+  select(-percent, -Status, -StatusExt, -n_years)
+
+all_site_years <- sindex %>%
+  mutate(Site_SP = paste(SITE_ID, SPECIES, sep = "_")) %>%
+  group_by(Site_SP, SITE_ID, SPECIES) %>%
+  summarise(
+    n_years_sp = n_distinct(YEAR),
+    .groups = "drop"
+  )
+short_series <- all_site_years %>%
+  filter(n_years_sp < 8)
+
+missing_sites <- short_series %>%
+  anti_join(pop_trends, by = "Site_SP")
+
+missing_sites <- missing_sites %>%
+  mutate(
+    EST = NA_real_,
+    SE  = NA_real_,
+    T   = NA_real_,
+    PV  = NA_real_,
+    Trend = "S.T.I."
+  )
+pop_trends <- bind_rows(pop_trends, missing_sites)
+
+
+pop_trends <- pop_trends %>%
+  mutate(
+    Status = case_when(
+      Trend == "Increment" ~ "inc",
+      Trend == "Regressió" ~ "reg",
+      Trend == "Estable"   ~ "est",
+      Trend == "Ocasional" ~ "oca",
+      Trend == "Extingida" ~ "ext",
+      Trend == "S.T.I."    ~ "sti",
+      TRUE ~ NA_character_
+    )
+  )
+
+sindex_mean_df <- sindex %>%
+  group_by(Site_SP) %>%
+  summarise(sindex_mean = mean(SINDEX, na.rm = TRUE))
+pop_trends <- pop_trends %>%
+  left_join(sindex_mean_df, by = "Site_SP") %>%
+  mutate(sindex_mean = if_else(is.na(sindex_mean), 0.01, sindex_mean))
+pop_trends <- pop_trends %>%
+  filter(sindex_mean != 0.01)
+
+
+pop_trends<-merge(pop_trends, names_CBMS, by="SPECIES")
+pop_trends <- subset(pop_trends, select = -nom_cat)
+
+pop_trends <- pop_trends[!pop_trends$Site_SP %in% c(
+  "69_Iphiclides podalirius",
+  "55_Iphiclides podalirius",
+  "116_Iphiclides podalirius"
+), ]
+
+write.table(pop_trends,"./results/populations.txt", row.names = FALSE)
+write.xlsx(pop_trends,"./results/populations.xlsx", row.names = FALSE)
+write.csv(pop_trends, "./results/populations.csv", row.names=FALSE)
+```
+
+
+##ex
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+detect_extinction_year <- function(df) {
+  pres_abs <- ifelse(df$SINDEX > 0, 1, 0)
+  years <- df$YearNum
+  
+  anterior <- NA
+  comptP <- 0
+  comptE <- 0
+  ext_year <- NA  # sempre inicialitzat com NA
+  
+  for (i in seq_along(pres_abs)) {
+    if (pres_abs[i] == 1) {
+      comptP <- comptP + 1
+      comptE <- 0
+      if (comptP >= 4) anterior <- "P"
+      
+    } else {
+      comptP <- 0
+      comptE <- comptE + 1
+      
+      if (!is.na(anterior) && comptE >= 4 && anterior == "P") {
+        anterior <- "E"
+        ext_year <- years[i]   # assignem l'any de l’extinció
+      }
+    }
+  }
+  
+  # Determine status
+  status <- if (!is.na(anterior) && anterior == "E") "Extingida" else NA
+  
+  # Retornem 1 SOLA FILA SEMPRE
+  return(data.frame(
+    StatusExt = status,
+    ExtYear   = ext_year
+  ))
+}
+extinction_results_year <- sindex8 %>%
+  arrange(Site_SP, YearNum) %>%
+  group_by(Site_SP) %>%
+  do(detect_extinction_year(.)) %>%
+  ungroup()
+extinction_results_year_clean <- extinction_results_year %>%
+  filter(!is.na(StatusExt))
+
+write.xlsx(extinction_results_year_clean, "extinctions.xlsx")
+
+
+```

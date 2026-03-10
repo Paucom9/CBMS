@@ -1,0 +1,443 @@
+---
+title: <div align="center">PROTOCOL DEL CÀLCUL DE L'ÍNDEX D'OBERTURA D'HÀBITAT (TAO):</div>
+author: "Pla-Narbona, C., Ubach, A., Stefanescu, C."
+date: "23/08/2021"
+output:
+  html_document:
+    code_folding: hide
+  word_document: default
+---
+
+![](./images/logo_museu.png){width="15%"} ![](./images/logo_CBMS.jpg){width="15%"} ---
+
+**Introducció**
+
+El [CBMS](https://www.catalanbms.org/ca/) (Catalan Butterfly Monitoring Scheme) és un programa de seguiment de papallones diürnes basat en la repetició setmanal de censos visuals al llarg de transsectes fixos, per tal de relacionar-los posteriorment amb diferents factors ambientals. La utilització de les papallones en aquests projectes respon al seu contrastat caràcter bioindicador, a la seva popularitat i carisma, i al fet d'haver experimentat, en temps recents, regressions generalitzades arreu d'Europa.
+
+El CBMS recull informació precisa de l'abundància d'espècies de ropalòcers en diferents tipus d'hàbitat,ja que els comptatges es diferencien a nivell de secció dins de cada itinerari. Aquestes dades permeten calcular diversos índexs que detallen les preferències d'una espècie per a cada ambient i que, després, formen la base per al càlcul dels indicadors multiespecífics d'hàbitat.
+
+Els comptatges distingeixen entre seccions que estan dominades per comunitats vegetals obertes o tancades. Això permet explorar quins són els ambients on les poblacions d'una determinada espècie assoleixen les màximes densitats i, en última instància, permet calcular un índex d'obertura (TAO) per cada espècie.
+
+L'índex TAO situa el conjunt d'espècies que apareixen a la [xarxa del CBMS](https://www.catalanbms.org/ca/xarxa/) en un gradient de preferència per hàbitats més tancats o oberts. El valor atorgat a cada espècie se situa en un rang de valors pròxims al -1 per a les espècies amb preferència d'hàbitats tancats i amb valors més pròxims a l'1 per a la preferència per hàbitats oberts (Ubach et al., 2019).
+
+Per a calcular-lo, es realitza primer de tot una classificació binària de totes les comunitats vegetals representades a la xarxa segons si són obertes, a les quals s'assigna el valor de 1, o tancades, a les quals s'assigna el valor de -1. Aquesta variable s'anomena "OPCL".
+
+A continuació detallem els passos a seguir per a calcular aquest índex TAO.
+
+Carreguem els paquets necessaris a R i obrim el directori. Creem un directori: TAO. Necessitem les taules:
+
+-   CBMS_TOT
+-   CBMS_seccions_2021
+-   CARACTERITZACIONS_2020
+-   RECLASS_HABITATS_2021
+
+Que incorporem a la carpeta "tables".
+
+També crearem la carpeta "results", on anirem guardant els resultats.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+#Carreguem llibreries
+
+library(readxl)
+library(dplyr) 
+#library(plyr)
+library(tidyverse)
+library(tidyr)
+library(reshape2)
+library(lubridate)
+library(xlsx)
+```
+
+## OBRIM I PREPAREM LA BASE DE DADES DEL CBMS
+
+Aquesta conté els comptatges dels individus de diferents espècies de ropalòcers dins de cada any de mostreig i itinerari, i dins d'aquest en una secció concreta. També conté altra informació més específica recollida a través de la [fitxa de camp](https://www.catalanbms.org/ca/recursos/) del CBMS.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+
+rm(list=ls())
+
+b_count <- read.table("./tables/cbms_counts.csv", sep=",", dec=".", header=TRUE)
+m_visit <- read.table("./tables/cbms_visits.csv",
+                      sep = ",",
+                      dec = ".",
+                      header = TRUE,
+                      fill = TRUE,
+                      comment.char = "",
+                      stringsAsFactors = FALSE)
+
+b_countG <- b_count %>%
+  rename(IDitin = transect_id,
+    SPECIES = species_name,
+    Nindiv = butterfly_count,
+    Secc = section_id)
+
+b_countG <- b_countG %>%
+  # unir només les columnes necessàries de m_visit
+  left_join(
+    m_visit %>% select(bms_visit_id, visit_date),
+    by = "bms_visit_id"
+  ) %>%
+  rename(DATE = visit_date) %>%
+  # generar noves columnes de data i bms_id
+  mutate(year  = year(DATE)) %>%
+  # eliminar la columna temporal bms_visit_id
+  select(-bms_visit_id, -DATE)
+
+b_countG<-subset(b_countG, b_countG$IDitin<10000)
+b_countG <- b_countG %>%
+  rename(Any = year)
+
+
+b_countG$IDitin<-as.factor(b_countG$IDitin)
+
+
+#Cal tenir totes les bases de dades en text (.txt)
+
+```
+
+### 1- NETEJEM LA BASE DE DADES I CALCULEM ELS ÍNDEX D'ABUNDÀNCIA:
+
+
+#### 1.2. CÀLCUL DE L'ÍNDEX D'ABUNDÀNCIA (IA)
+
+És la suma dels individus de cada espècie en una secció, itinerari i any concrets.
+
+```{r,message=FALSE, warning=FALSE, error=FALSE}
+treball_IA<-aggregate(Nindiv ~ SPECIES + IDitin + Secc + Any, data = b_countG, sum) 
+names(treball_IA)=c("SPECIES","IDitin","IDsecc","Any","IA")
+
+```
+
+#### 1.3. ESTANDARDITZEM ELS VALORS DE IA A SECCIONS DE 100m
+
+##### IA\*100/long seccio = IA100
+
+Les seccions de cada itinerari del CBMS poden variar en longitud, entre 20 i 800 metres (amb una mitjana de 178 m, a 2021), resultant en itineraris d'entre 1.5 i 2.5 km de longitud. És necessari, doncs, estandaritzar el càlcul de l'abundància de cada espècie a una longitud de mostreig concreta, per evitar sobredimensionar valors i menystenir-ne d'altres. Estandarditzarem les seccions a 100 metres, l'índex d'abundància (IA) estandarditzat passarà a ser IA100.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+long_secc <- read.table("./tables/cbms_sites.csv",
+                        sep = ";",
+                        dec = ",",
+                        header = TRUE) %>%
+  dplyr::select(transect_id, section_id, length) %>%
+  dplyr::filter(section_id <= 17) %>%
+  dplyr::mutate(
+    transect_id = as.factor(transect_id),
+    section_id  = as.factor(section_id)
+  )
+
+names(long_secc) <- c("IDitin", "IDsecc", "LONG")
+
+cbms_ready<-merge(treball_IA,long_secc,by=c("IDitin","IDsecc")) 
+cbms_ready$IA100<-(cbms_ready$IA*100)/cbms_ready$LONG
+names(cbms_ready)=c("ITIN", "SECC", "SPECIES", "Any", "IA", "LONG", "IA100")
+
+```
+
+## PREPAREM LA TAULA DELS HÀBITATS
+
+### 2- AGRUPEM LES DADES DELS HÀBITATS:
+
+La caracterització de les comunitats vegetals de les seccions dels itineraris es va iniciar l'any 2000 i es revisa cada 6 anys, a cada itinerari. Aquesta informació és essencial per poder calcular indicadors d'hàbitat i detectar problemàtiques que afectin el conjunt de la biodiversitat en determinats tipus d'ambients.
+
+Aquesta caracterització vegetal es fa segons el [Manual dels hàbitats de Catalunya](http://mediambient.gencat.cat/ca/05_ambits_dactuacio/patrimoni_natural/sistemes_dinformacio/habitats/habitats_terrestres/la_classificacio_corine/) (o codi CORINE), que inclou més de 600 tipus d'hàbitats presents a Catalunya. És una adaptació del sistema de classificació dels hàbitats més utilitzat a la Unió Europea: el [CORINE Biotopes Manual](https://mapahabitatsaragon.files.wordpress.com/2015/10/corine_biotopes_ue_1991.pdf).
+
+Les comunitats vegetals originals classificades segons el codi CORINE s'han agrupat en 20 categories d'hàbitat més àmplies per a establir una classificació útil per a l'estudi dels ropalòcers. Les anomenarem [hàbitats CBMS](https://www.catalanbms.org/ca/habitats/).
+
+Per una banda, tenim un document amb els 682 hàbitats CORINE reclassificats segons els 20 hàbitats CBMS ("RECLASS_HABITATS.xlsx") i, per una altra, les caracteritzacions de cada secció, itinerari i any de caracterització, que van actualitzant-se cada any que hi ha noves caracteritzacions ("CARACTERITZACIONS.xlsx"):
+
+#### 2.1. AJUNTEM LES DUES BASES DE DADES
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+hab1<-read.delim("./tables/HABITATS.csv", sep = ";", dec = ",", header = T)
+hab2<-read.delim("./tables/RECLASS_HABITATS.txt",sep =";", header = T)
+hab2$HABITAT_ID<-as.character(hab2$codi)
+
+hab1<-hab1%>% select(5,10,12,13,18)
+
+names(hab2) <- toupper(names(hab2))
+names(hab1)=c("ANYCAR", "ITIN", "SECC", "HABITAT_ID", "COB100")
+names(hab2)<-c("ID", "HABITAT_ID", "NOM_CA", "NOM_ES", "NOM_EN", "OPCL", "R20_ID", "R20_DS")
+habitat_TAO<-merge(hab1,hab2,by="HABITAT_ID") %>% dplyr::select(1:5,10) %>%
+  mutate(
+    ITIN = as.factor(ITIN),
+    SECC = as.factor(SECC),
+    COB100= as.numeric(COB100)
+  )
+```
+
+#### 2.2. ELIMINEM LES SECCIONS ON HI HA OUTLIERS, DETECATATS MANUALMENT
+
+Són aquelles seccions on la presència d'abeuradors, efecte d'encimbellament i d'altres provoquen que hi hagi una densitat molt més elevada de l'habitual i per un efecte aliè a l'hàbitat, per això s'han de descartar. Posteriorment, sumem les cobertures del mateix hàbitat CBMS dins de la mateixa secció, itinerari i any.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+habitat_TAO$It_Secc<-paste(habitat_TAO$ITIN, "-", habitat_TAO$SECC) 
+habitat_TAO$It_Secc <- as.factor(habitat_TAO$It_Secc)
+habitat_TAO<-filter(habitat_TAO,It_Secc!="85 - 4")
+habitat_TAO<-filter(habitat_TAO,It_Secc!="58 - 5")
+habitat_TAO<-filter(habitat_TAO,It_Secc!="167 - 1")
+habitat_TAO<-filter(habitat_TAO,It_Secc!="167 - 2")
+habitat_TAO<-filter(habitat_TAO,It_Secc!="167 - 3")
+
+hab_cobertura<-aggregate(COB100 ~ OPCL + ITIN + SECC + ANYCAR, data = habitat_TAO, sum) 
+```
+
+#### 2.3. ASSIGNEM UN ANY DE CARACTERITZACIÓ A CADA ANY DE COMPTATGE
+
+El paisatge és dinàmic, per tant, les comunitats vegetals i els hàbitats poden canviar passats uns anys, ja sigui per l'efecte de successió, d'un incendi, desbrossament, abandonament de camps agrícoles o altres. És per això que la caracterització dels itineraris es fa cada 6 anys però els comptatges no s'aturen. Per tant, hem d'assignar cada any de comptatge a un any de caracterització per assignar cada comptatge a uns hàbitats concrets.
+
+Per això hem assignat a cada caracterització: els tres anys següents, el propi any i els dos anys anteriors a la caracterització de cada itinerari, contant així 6 anys de comptatges per a cada any de caracterització.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+#Definim quantes caracteritzacions té cada itinerari:
+Any_car_pre<-hab_cobertura %>% select(2,3,4)
+Any_car<-unique(Any_car_pre)
+#Definim en quins anys s'ha fet el comptatge en cada itinerari:
+Any_compt_pre<-cbms_ready %>% select(1,2,4)
+Any_compt<-unique(Any_compt_pre)
+#Assignem un any de caracterització a cada any de comptatge segons proximitat a l'ANYCAR:
+anys_reclass<-merge(Any_car,Any_compt, by = c("ITIN","SECC"))
+anys_reclass$dif<-anys_reclass$Any-anys_reclass$ANYCAR
+anys_f1<-filter(anys_reclass,dif<=3)
+anys_f2<-filter(anys_f1,dif>=-2)
+
+```
+
+Com que el paisatge canvia, i no podem assegurar que en el total dels 6 anys l'hàbitat sigui exactament el mateix, assignarem pesos diferents als comptatges de cada any, ja que l'hàbitat definit un any X s'assemblarà molt més al propi any X de comptatge que passats 3 anys. Afegim el pes corresponent a cada any.
+
+Finalment ajuntarem dades d'hàbitat i comptatges en una sola taula:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+
+anys_f2$pes<-abs(anys_f2$dif)
+anys_f2$pes[anys_f2$pes == 3] <- 0.25
+anys_f2$pes[anys_f2$pes == 2] <- 0.5
+anys_f2$pes[anys_f2$pes == 1] <- 0.75
+anys_f2$pes[anys_f2$pes == 0] <- 1
+
+cbms_anys<-merge(anys_f2,cbms_ready,by=c("ITIN","SECC","Any"))
+cbms_anys<-cbms_anys %>% select(1:7,10)
+
+tao_base<-merge(cbms_anys,hab_cobertura,by=c("ITIN", "SECC", "ANYCAR"))
+
+```
+
+#### 2.4. DESCARTAR ELS ITINERARIS ON NOMÉS HI HAGI HÀBITATS TOTALMENT OBERTS O TANCATS
+
+Per a que la presència d'una espècie en un hàbitat concret sigui significativa cal que aquesta tingui l'opció de ser a l'altre hàbitat. És per això que eliminarem aquells itineraris que siguin totalment oberts o totalment tancats.
+
+A l'hora d'iniciar nous itineraris és important que aquest compti amb varietat d'hàbitats oberts i tancats per a que les dades puguin ser incorporades als càlculs.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+itineraris_filtre<-aggregate(OPCL~ITIN + ANYCAR, data = tao_base, mean)
+itineraris_filtre$absOPCL<-abs(itineraris_filtre$OPCL)
+itineraris_filtre<-filter(itineraris_filtre, absOPCL != 1)
+itineraris_filtre$It_Anycar<-paste(itineraris_filtre$ITIN,"-",itineraris_filtre$ANYCAR)
+ 
+#Eliminar els itineraris seleccionats de la base de dades gran:
+tao_base$It_Anycar<-paste(tao_base$ITIN,"-",tao_base$ANYCAR)
+tao_base<- tao_base %>% filter(It_Anycar %in% itineraris_filtre$It_Anycar)
+```
+
+S'ha establert un llindar de cobertura mínima del 50% d'un tipus d'hàbitat obert o tancat per secció, eliminant així de l'anàlisi hàbitats que són minoritaris i que molt possiblement no expliquen la presència d'una determinada espècie en aquella secció.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+tao_base1<-filter(tao_base,COB100>50)
+```
+
+#### 2.5. ELIMINEM LES ESPÈCIES QUE APAREIXEN A <5 ITINERARIS
+
+Per tal d'obtenir valors amb un mínim de fiabilitat és necessiari tenir un mínim de comptatges i d'hàbitats. Establim aquest mínim mostral a 5 itineraris.
+
+Comptem el nombre d'itineraris on apareix cada espècie, i filtrem les espècies que apareixen a menys de 5 itineraris:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+# 1. Suma de IA100 per itinerari i espècie
+count3 <- tao_base1 %>%
+  group_by(ITIN, SPECIES) %>%
+  summarise(IA100 = sum(IA100), .groups = "drop")
+
+# 2. Comptem en quants itineraris apareix cada espècie
+count1 <- count3 %>%
+  group_by(SPECIES) %>%
+  summarise(n_Itin = n(), .groups = "drop")  # n() compta files, cada fila és un ITIN
+
+# 3. Fem merge amb la base original
+count <- merge(tao_base1, count1, by = "SPECIES")
+
+# 4. Filtrar espècies que apareixen en almenys 5 itineraris
+tao_ready <- count %>%
+  filter(n_Itin >= 5)
+rm(count1, count2,count3)
+
+#Per afegir-ho al final:
+Nitin_esp1<-tao_ready %>% select(1,11) 
+Nitin_esp<-unique(Nitin_esp1)
+
+```
+
+#### 2.6. CREACIÓ DE LA PLANTILLA DE ZEROS
+Per últim, abans de fer el càlcul de la densitat mitjana de cada espècie en tots els hàbitats del conjunt de la xarxa del CBMS s'han de tenir en compte tots els itineraris on apareix l’espècie. En aquest procés s'assigna una densitat de zero a aquells itineraris on l’espècie no ha aparegut.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+llista1a_pre<-tao_ready %>% select(1,2,4,5)
+llista1a<-unique(llista1a_pre)
+
+llista2a_pre<-tao_ready %>% select(2:4, 9, 10)
+llista2a<-unique(llista2a_pre)
+
+llista3a<-full_join(llista1a,llista2a,by = c("ITIN", "ANYCAR"))
+tao_base<-full_join(tao_ready, llista3a, by = c("ITIN", "SECC", "Any", "SPECIES", "OPCL", "COB100", "ANYCAR"))
+
+#Canviem els NA per 0:
+tao_base[is.na(tao_base)] <- 0
+
+```
+
+## DENSITAT PER ESPÈCIE
+Aquesta densitat s'ha calculat a partir de les dades per secció, multiplicant la mitjana de la densitat anual en aquella secció, per l'any concret de caracterització dels hàbitats i pel percentatge de recobriment dels hàbitats que hi són presents. 
+
+### 3- CÀLCUL DE LA DENSITAT:
+#### 3.1. CALCULEM IA100*CADA GRUP D'ANYS SEGONS ANY DE CARACTERITZACIÓ 
+Corregint abans les IA100 pel pes de cada valor segons l'any de comptatge:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+tao_base$IA100pes<-tao_base$IA100*tao_base$pes
+
+tao_base<-aggregate(IA100pes ~ OPCL + SPECIES + COB100 + ITIN + SECC +ANYCAR,
+                    data = tao_base, mean)
+```
+
+#### 3.2. DEFINIM LA DENSITAT DELS HÀBITATS OBERTS I DELS TANCATS PER ITINERARI I ESPÈCIE
+Per evitar la pseudoreplicació temporal generada per una diferència en l'esforç de mostreig de cada itinerari farem la mitjana de cada hàbitat-itinerari amb tots els anys de caracterització.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+tao_base$OPCLCOB100<-tao_base$OPCL*tao_base$COB100
+
+tao_base$densitat <- tao_base$IA100pes*(tao_base$OPCLCOB100/100)
+tao_base$densitat<-abs(tao_base$densitat)
+#names(tao_base) = c("OPCL", "SPECIES", "COB100", "ITIN", "SECC", "ANYCAR", "IA100_M", "OPCLCOB100", "densitat")
+tao_OPCL<-aggregate(densitat ~ SPECIES + ITIN + SECC + OPCL, data=tao_base, mean)
+```
+
+Finalment, aplicarem un últim filtre per a seleccionar només aquelles seccions en que la mitjana del OPCL (obert/tancat) sigui major de 0.1 (en valor absolut).
+Aquest filtre l'apliquem per tal de descartar aquelles seccions que no són clarament obertes o tancades, en que un valor mig del OPCL proper a 0 indica que hi ha tant hàbitat obert com tancat i on, per tant, no podem afirmar que la presència d'un individu en aquella secció sigui deguda a un hàbitat o a un altre.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+tao_OPCL$It_Secc<-paste(tao_OPCL$ITIN, "it-sec", tao_OPCL$SECC)
+tao_OPCL$It_Secc <- as.factor(tao_OPCL$It_Secc)
+tao_OPCL$It_Secc <- as.numeric(tao_OPCL$It_Secc)
+tao_OPCL$It_Secc <- as.factor(tao_OPCL$It_Secc)
+
+tao_OPCL_filtre_1<-aggregate(OPCL ~ ITIN + SECC + It_Secc, data = tao_OPCL, mean)
+tao_OPCL_filtre_2<-filter(tao_OPCL_filtre_1,abs(OPCL)>=0.1)
+tao_OPCL_filtre<- tao_OPCL %>% filter(It_Secc %in% tao_OPCL_filtre_2$It_Secc)
+
+
+#També eliminem les famílies i gèneres de la variable "Espècie"
+tao_OPCL_filtre<-tao_OPCL_filtre[!tao_OPCL_filtre$SPECIES %in% c("HES","PIE","LYC","NYM","SAT","hespsp","hestsp","lyclsp","nymasp","nymlsp","nymmsp","piegsp","piepsp","pielsp","satesp","lycags", "sathsp"),]
+
+
+#Densitat per hàbitat i itinerari (per al càlcul final):
+tao_OPCL_filtre$OPCL<-as.factor(tao_OPCL_filtre$OPCL)
+tao_OPCL_filtre$SECC<-as.factor(tao_OPCL_filtre$SECC)
+
+tao_D_OPCL<- aggregate(densitat ~ OPCL + ITIN + SPECIES, data = tao_OPCL_filtre, mean)
+```
+
+## CÀLCUL TAO
+### 4- CÀLCUL DEL TAO PER ESPÈCIE:
+El càlcul de l'índex TAO es basa en la fórmula de Suggitt et al. (2012), on $Dopen$ és la mitjana de la densitat en hàbitats oberts i $Dclosed$ la mitjana de la densitat en hàbitats tancats, per a cada espècie, i on $i$ és cada itinerari de la xarxa del CBMS. Per tant, primer cal fer el càlcul per a cada itinerari i finalment la mitjana de tots ells.
+
+Fórmula:![](./images/formula_TAO.png){width=20%}
+
+Primer cal crear la base de dades on anar guardant els càlculs i caldrà, també, afegir zeros a l'hàbitat d'aquells itineraris on l'espècie només apareix a un dels dos hàbitats.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+TAO<-data.frame(matrix(ncol=1))
+names(TAO)=c("TAOSP")
+TAOitin<-data.frame(matrix(ncol=1))
+names(TAOitin)=c("index")
+
+levels<-aggregate(densitat ~ SPECIES, data = tao_OPCL_filtre, sum)
+
+#Previ a afegir els zeros:
+OPCL<-c(1,-1)
+llista5<-data.frame(OPCL)
+llista5$OPCL<-as.factor(llista5$OPCL)
+```
+
+Càlculs per espècie:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+for(i in levels$SPECIES){
+  especie<-subset(tao_D_OPCL,SPECIES==(i))
+  
+  for (j in especie$ITIN){
+    itin_tao<-subset(especie,ITIN==(j))
+    #Cal afegir els zeros aquí:
+    itin_zeros<-full_join(itin_tao,llista5,by="OPCL")
+    itin_zeros[is.na(itin_zeros)] <- 0
+    itin_zeros<-itin_zeros[order(itin_zeros$OPCL),]
+    
+    taoj<-((2*itin_zeros$densitat[2])/(itin_zeros$densitat[1]+itin_zeros$densitat[2]))-1
+    TAOitin<-rbind(TAOitin, taoj)
+  }
+  
+  TAOitin$index[is.nan(TAOitin$index)]<-NA
+  especie_tao<- mean(TAOitin$index, na.rm=TRUE)
+  #Anem guardant els TAO al DF "TAO":
+  TAO[i]<-cbind(especie_tao)
+  #La DF TAOitin s'ha de crear cada vegada que acabem una espècie:
+  TAOitin<-data.frame(matrix(ncol=1))
+  names(TAOitin)=c("index")
+}
+
+TAO<-data.frame(t(TAO)) #transposar files-columnes
+TAO<-data.frame(TAO[-1,])
+list<-levels %>% filter(SPECIES %in% levels$SPECIES) %>% select (1)
+
+TAO<-cbind(list,TAO)
+
+TAO_final<-data.frame(TAO)
+names(TAO_final)=c("SPECIES", "TAO")
+
+# Afegir el nombre total d'itineraris on s'ha vist cada espècie
+n_itin_df <- b_countG %>%
+  group_by(SPECIES) %>%
+  summarise(n_ITIN = n_distinct(IDitin), .groups = "drop")
+
+# Merge amb SSI
+TAO_final <- TAO_final %>%
+  left_join(n_itin_df, by = "SPECIES")
+
+# Filtrar espècies que continguin "sp."
+TAO_final  <- TAO_final %>%
+  filter(!grepl("sp\\.", SPECIES, ignore.case = TRUE))
+
+TAO_final<-merge(TAO_final, names_CBMS, by="SPECIES")
+
+#Exportar taula final:
+write.table(TAO_final,"./results/TAO_2025.txt",sep=";", row.names=F)
+
+write.xlsx(TAO_final,"./results/TAO_2025.xlsx", row.names=F)
+write.csv(TAO_final,"./results/TAO_2025.csv", row.names=F)
+
+
+
+setdiff(unique(TAO_final$SPECIES), unique(names_CBMS$SPECIES))
+setdiff(unique(names_CBMS$SPECIES), unique(TAO_final$SPECIES))
+
+```
+
+Aquest índex ens permet assignar a cada espècie un valor entre -1, si tenen preferència per hàbitats totalment tancats, i +1, quan la preferència és per hàbitats únicament oberts.
+
+::: {align="center"}
+![](./images/Chart_TAO.png){width="70%"}
+:::
+
+::: {align="center"}
+Font: *Ubach et al., 2019*
+:::
+
+------------------------------------------------------------------------

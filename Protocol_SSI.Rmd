@@ -1,0 +1,556 @@
+---
+title: <div align="center">PROTOCOL DEL CÀLCUL DE L'ÍNDEX D'ESPECIALITZACIÓ D'HÀBITAT (SSI):</div>
+author: "Pla-Narbona, C., Ubach, A., Stefanescu, C."
+date: "6/10/2023"
+output:
+  html_document:
+    code_folding: hide
+    toc: TRUE
+    toc_depth: 4
+---
+
+![](./images/logo_museu.png){width="15%"} ![](./images/logo_CBMS.jpg){width="15%"}
+
+------------------------------------------------------------------------
+
+**Introducció**
+
+El [CBMS](https://www.catalanbms.org/ca/) (Catalan Butterfly Monitoring Scheme) és un programa de seguiment de papallones diürnes basat en la repetició setmanal de censos visuals al llarg de transsectes fixos, per tal de relacionar-los posteriorment amb diferents factors ambientals. La utilització de les papallones en aquests projectes respon al seu contrastat caràcter bioindicador, a la seva popularitat i carisma, i al fet d'haver experimentat, en temps recents, regressions generalitzades arreu d'Europa.
+
+El CBMS recull informació precisa de l'abundància d'espècies de ropalòcers en diferents tipus d'hàbitat,ja que els comptatges es diferencien a nivell de secció dins de cada itinerari. Aquestes dades permeten calcular diversos índexs que detallen les preferències d'una espècie per a cada ambient i que, després, formen la base per al càlcul dels indicadors multiespecífics d'hàbitat.
+
+Els comptatges distingeixen entre seccions que estan dominades per comunitats vegetals, les quals es poden assignar a grans tipus d'hàbitats. Això permet explorar quins són els ambients on les poblacions d'una determinada espècie assoleixen les màximes densitats i, en última instància, permet calcular un índex d'especialització d'hàbitat (SSI) per cada espècie.
+
+La preferència d'una espècie per un hàbitat es calcula a partir de la densitat que presenta en aquest hàbitat al conjunt de la [xarxa del CBMS](https://www.catalanbms.org/ca/xarxa/), comparada amb les densitats a la resta dels hàbitats. A efectes gràfics, les densitats per hàbitats es mostren com un percentatge respecte la suma total de densitats als 20 hàbitats definits.
+
+A continuació detallem els passos a seguir per a calcular aquest índex SSI.
+
+Carreguem els paquets necessaris a R i obrim el directori. Creem un directori: SSI. Necessitem les taules:
+
+-   CBMS_TOT
+-   CBMS_seccions_2021
+-   CARACTERITZACIONS_2020
+-   RECLASS_HABITATS_2021
+
+Que incorporem a la carpeta "tables".
+
+També crearem la carpeta "results", on anirem guardant els resultats.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+#Carreguem llibreries
+library(dplyr) 
+library(readxl)
+library(xlsx)
+library(lubridate)
+
+library(plyr)
+library(tidyverse)
+library(tidyr)
+library(reshape2)
+
+```
+
+## OBRIM I PREPAREM LA BASE DE DADES DEL CBMS
+
+Aquesta conté els comptatges dels individus de diferents espècies de ropalòcers dins de cada any de mostreig i itinerari, i dins d'aquest en una secció concreta. També conté altra informació més específica recollida a través de la [fitxa de camp](https://www.catalanbms.org/ca/recursos/) del CBMS.
+
+```{r, message = FALSE, warning=FALSE, error= FALSE}
+rm(list=ls())
+
+b_count <- read.table("./tables/cbms_counts.csv", sep=",", dec=".", header=TRUE)
+m_visit <- read.table("./tables/cbms_visits.csv",
+                      sep = ",",
+                      dec = ".",
+                      header = TRUE,
+                      fill = TRUE,
+                      comment.char = "",
+                      stringsAsFactors = FALSE)
+
+#Cal tenir totes les bases de dades en text (.txt)
+
+```
+
+### 1- NETEJEM LA BASE DE DADES I CALCULEM ELS ÍNDEX D'ABUNDÀNCIA:
+
+#### 1.1. ELIMINEM LES DADES QUE NO ENS SERAN ÚTILS
+
+Ens quedem només amb itinerari, secció, any, espècie i nombre d'individus.
+
+```{r, message = FALSE, warning=FALSE, error=FALSE}
+
+b_countG <- b_count %>%
+  rename(IDitin = transect_id,
+    SPECIES = species_name,
+    Nindiv = butterfly_count,
+    Secc = section_id)
+
+b_countG <- b_countG %>%
+  # unir només les columnes necessàries de m_visit
+  left_join(
+    m_visit %>% select(bms_visit_id, visit_date),
+    by = "bms_visit_id"
+  ) %>%
+  rename(DATE = visit_date) %>%
+  # generar noves columnes de data i bms_id
+  mutate(year  = year(DATE)) %>%
+  # eliminar la columna temporal bms_visit_id
+  select(-bms_visit_id, -DATE)
+
+b_countG<-subset(b_countG, b_countG$IDitin<10000)
+b_countG <- b_countG %>%
+  rename(Any = year)
+
+
+b_countG$IDitin<-as.factor(b_countG$IDitin)
+
+```
+
+#### 1.2. CÀLCUL DE L'ÍNDEX D'ABUNDÀNCIA (IA)
+
+És la suma dels individus de cada espècie en una secció, itinerari i any concrets.
+
+```{r,message=FALSE, warning=FALSE, error=FALSE}
+treball_IA<-aggregate(Nindiv ~ SPECIES + IDitin + Secc + Any, data = b_countG, sum) 
+names(treball_IA)=c("SPECIES","IDitin","IDsecc","Any","IA")
+
+
+#write.csv(treball_IA, "treball_impactes.csv")
+
+```
+
+#### 1.3. ESTANDARDITZEM ELS VALORS DE IA A SECCIONS DE 100m
+
+##### IA\*100/long seccio = IA100
+
+Les seccions de cada itinerari del CBMS poden variar en longitud, entre 20 i 800 metres (amb una mitjana de 178 m, a 2021), resultant en itineraris d'entre 1.5 i 2.5 km de longitud. És necessari, doncs, estandaritzar el càlcul de l'abundància de cada espècie a una longitud de mostreig concreta, per evitar sobredimensionar valors i menystenir-ne d'altres. Estandarditzarem les seccions a 100 metres, l'índex d'abundància (IA) estandarditzat passarà a ser IA100.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+long_secc <- read.table("./tables/cbms_sites.csv",
+                        sep = ";",
+                        dec = ",",
+                        header = TRUE) %>%
+  dplyr::select(transect_id, section_id, length) %>%
+  dplyr::filter(section_id <= 17) %>%
+  dplyr::mutate(
+    transect_id = as.factor(transect_id),
+    section_id  = as.factor(section_id)
+  )
+
+names(long_secc) <- c("IDitin", "IDsecc", "LONG")
+
+
+
+cbms_ready<-merge(treball_IA,long_secc,by=c("IDitin","IDsecc")) 
+# Opció 1: eliminar seccions amb longitud 0
+cbms_ready <- cbms_ready %>% filter(LONG > 0)
+cbms_ready$IA100<-(cbms_ready$IA*100)/cbms_ready$LONG
+names(cbms_ready)=c("ITIN", "SECC", "SPECIES", "Any", "IA", "LONG", "IA100")
+
+```
+
+## PREPAREM LA TAULA DELS HÀBITATS
+
+### 2- AGRUPEM LES DADES DELS HÀBITATS:
+
+La caracterització de les comunitats vegetals de les seccions dels itineraris es va iniciar l'any 2000 i es revisa cada 6 anys, a cada itinerari. Aquesta informació és essencial per poder calcular indicadors d'hàbitat i detectar problemàtiques que afectin el conjunt de la biodiversitat en determinats tipus d'ambients.
+
+Aquesta caracterització vegetal es fa segons el [Manual dels hàbitats de Catalunya](http://mediambient.gencat.cat/ca/05_ambits_dactuacio/patrimoni_natural/sistemes_dinformacio/habitats/habitats_terrestres/la_classificacio_corine/) (o codi CORINE), que inclou més de 600 tipus d'hàbitats presents a Catalunya. És una adaptació del sistema de classificació dels hàbitats més utilitzat a la Unió Europea: el [CORINE Biotopes Manual](https://mapahabitatsaragon.files.wordpress.com/2015/10/corine_biotopes_ue_1991.pdf).
+
+Les comunitats vegetals originals classificades segons el codi CORINE s'han agrupat en 20 categories d'hàbitat més àmplies per a establir una classificació útil per a l'estudi dels ropalòcers. Les anomenarem [hàbitats CBMS](https://www.catalanbms.org/ca/habitats/).
+
+Per una banda, tenim un document amb els 682 hàbitats CORINE reclassificats segons els 20 hàbitats CBMS ("RECLASS_HABITATS.xlsx") i, per una altra, les caracteritzacions de cada secció, itinerari i any de caracterització, que van actualitzant-se cada any que hi ha noves caracteritzacions ("CARACTERITZACIONS.xlsx"):
+
+#### 2.1. AJUNTEM LES DUES BASES DE DADES
+
+```{r, message=FALSE,warning=FALSE,error=FALSE}
+hab3<-read.delim("./tables/HABITATS.csv", sep = ";", dec = ",", header = T)
+hab2<-read.delim("./tables/RECLASS_HABITATS.txt",sep =";", header = T)
+hab2$HABITAT_ID<-as.character(hab2$codi)
+
+hab3<-hab3%>% select(5,10,12,13,18)
+
+names(hab3)=c("ANYCAR", "ITIN", "SECC", "HABITAT_ID", "COB100")
+habitat<-merge(hab3,hab2,by="HABITAT_ID") %>% dplyr::select(1:5,12) %>%
+  mutate(
+    ITIN = as.factor(ITIN),
+    SECC = as.factor(SECC)
+  )
+names(habitat)=c("HABITAT_ID", "ANYCAR", "ITIN", "SECC", "COB100", "R20_ID")
+
+```
+
+#### 2.2. ELIMINEM LES SECCIONS ON HI HA OUTLIERS, DETECTATS MANUALMENT
+
+Són aquelles seccions on la presència d'abeuradors, efecte d'encimbellament i d'altres provoquen que hi hagi una densitat molt més elevada de l'habitual i per un efecte aliè a l'hàbitat, per això s'han de descartar. Posteriorment, sumem les cobertures del mateix hàbitat CBMS dins de la mateixa secció, itinerari i any.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+habitat$It_Secc<-paste(habitat$ITIN, "-", habitat$SECC) 
+habitat$It_Secc <- as.factor(habitat$It_Secc)
+habitat<-filter(habitat,It_Secc!="85 - 4")
+habitat<-filter(habitat,It_Secc!="58 - 5")
+habitat<-filter(habitat,It_Secc!="167 - 1")
+habitat<-filter(habitat,It_Secc!="167 - 2")
+habitat<-filter(habitat,It_Secc!="167 - 3")
+habitat<-filter(habitat,It_Secc!="181 - 8")
+
+hab_cobertura<-aggregate(COB100 ~ R20_ID + ITIN + SECC + ANYCAR, data = habitat, sum) 
+hab_cobertura$R20_ID<-as.factor(hab_cobertura$R20_ID)
+```
+
+#### 2.3. ASSIGNEM UN ANY DE CARACTERITZACIÓ A CADA ANY DE COMPTATGE
+
+El paisatge és dinàmic, per tant, les comunitats vegetals i els hàbitats poden canviar passats uns anys, ja sigui per l'efecte de successió, d'un incendi, desbrossament, abandonament de camps agrícoles o altres. És per això que la caracterització dels itineraris es fa cada 6 anys però els comptatges no s'aturen. Per tant, hem d'assignar cada any de comptatge a un any de caracterització per assignar cada comptatge a uns hàbitats concrets.
+
+Per això hem assignat a cada caracterització: els tres anys següents, el propi any i els dos anys anteriors a la caracterització de cada itinerari, contant així 6 anys de comptatges per a cada any de caracterització.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+#Definim quantes caracteritzacions té cada itinerari:
+Any_car_pre<-hab_cobertura %>% select(2,3,4)
+Any_car<-unique(Any_car_pre)
+#Definim en quins anys s'ha fet el comptatge en cada itinerari:
+Any_compt_pre<-cbms_ready %>% select(1,2,4)
+Any_compt<-unique(Any_compt_pre)
+#Assignem un any de caracterització a cada any de comptatge segons proximitat a l'ANYCAR:
+anys_reclass<-merge(Any_car,Any_compt, by = c("ITIN","SECC"))
+anys_reclass$dif<-anys_reclass$Any-anys_reclass$ANYCAR
+anys_f1<-filter(anys_reclass,dif<=3)
+anys_f2<-filter(anys_f1,dif>=-2)
+
+rm(Any_car, Any_car_pre, Any_compt, Any_compt_pre)
+
+```
+
+Com que el paisatge canvia, i no podem assegurar que en el total dels 6 anys l'hàbitat sigui exactament el mateix, assignarem pesos diferents als comptatges de cada any, ja que l'hàbitat definit un any X s'assemblarà molt més al propi any X de comptatge que passats 3 anys. Afegim el pes corresponent a cada any.
+
+Finalment ajuntarem dades d'hàbitat i comptatges en una sola taula:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+anys_f2$pes<-abs(anys_f2$dif)
+anys_f2$pes[anys_f2$pes == 3] <- 0.25
+anys_f2$pes[anys_f2$pes == 2] <- 0.5
+anys_f2$pes[anys_f2$pes == 1] <- 0.75
+anys_f2$pes[anys_f2$pes == 0] <- 1
+
+cbms_anys<-merge(anys_f2,cbms_ready,by=c("ITIN","SECC","Any"))
+cbms_anys<-cbms_anys %>% select(1:7,10)
+
+rm(anys_f1, anys_f2)
+
+cbms_hab_anys<-merge(cbms_anys,hab_cobertura,by=c("ITIN", "SECC", "ANYCAR"))
+```
+
+#### 2.4. TRAIEM ELS HÀBITATS EN QUE LA COBERTURA ÉS \<25%
+
+S'ha establert un llindar de cobertura mínima del 25% d'un tipus d'hàbitat per secció, eliminant així de l'anàlisi hàbitats que són minoritaris i que molt possiblement no expliquen la presència d'una determinada espècie en aquella secció.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+cbms_hab_anys<-filter(cbms_hab_anys,COB100>=25)
+```
+
+#### 2.5. ELIMINEM LES ESPÈCIES QUE APAREIXEN A \<5 ITINERARIS
+
+Per tal d'obtenir valors amb un mínim de fiabilitat és necessiari tenir un mínim de comptatges i d'hàbitats. Establim aquest mínim mostral a 5 itineraris.
+
+Comptem el nombre d'itineraris on apareix cada espècie, i filtrem les espècies que apareixen a menys de 5 itineraris:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+# Comptem el nombre d'itineraris on apareix cada espècie
+count1 <- cbms_hab_anys %>%
+  group_by(SPECIES) %>%
+  summarise(n_Itin = n_distinct(ITIN))  # número d'itineraris únics per espècie
+
+# Fem merge amb la taula original
+count <- merge(cbms_hab_anys, count1, by = "SPECIES")
+
+# Filtrar espècies amb almenys 5 itineraris
+cbms_hab_anys <- count %>% filter(n_Itin >= 5)
+
+# Neteja
+rm(count, count1)
+```
+
+## DENSITAT PER ESPÈCIE
+
+Aquesta densitat s'ha calculat a partir de les dades per secció, multiplicant la mitjana de la densitat anual en aquella secció, per l'any concret de caracterització dels hàbitats i pel percentatge de recobriment dels hàbitats que hi són presents.
+
+### 3- CÀLCUL DE LA DENSITAT:
+
+#### 3.1. CALCULEM IA100\*CADA GRUP D'ANYS SEGONS ANY DE CARACTERITZACIÓ
+
+Corregint abans les IA100 pel pes de cada valor segons l'any de comptatge
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+
+
+cbms_hab_anys$IA100pes<-cbms_hab_anys$IA100*cbms_hab_anys$pes
+
+cbms_habitat2<-aggregate(IA100pes ~ R20_ID + SPECIES + COB100 + ITIN + SECC +ANYCAR, data = cbms_hab_anys, mean)
+
+```
+
+#### 3.2. MULTIPLIQUEM LA MITJANA ANUAL PER LA COBERTURA DE CADA HÀBITAT
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+cbms_habitat2$densitat <- cbms_habitat2$IA100pes*(cbms_habitat2$COB100/100)
+names(cbms_habitat2) = c("R20_ID", "SPECIES", "COB100", "ITIN", "SECC", "ANYCAR", "IA100_M", "densitat")
+
+cbms_habitat<-cbms_habitat2[!cbms_habitat2$SPECIES %in% c("HES","PIE","LYC","PAP", "NYM","SAT","hespsp","hestsp","lyclsp","nymasp","nymlsp","nymmsp","piegsp","piepsp","pielsp","satesp","lycags", "lycasp", "sathsp"),]
+#Eliminem les famílies i gèneres de la variable "Espècie"
+
+```
+
+Per evitar la pseudoreplicació temporal generada per una diferència en l'esforç de mostreig de cada itinerari farem la mitjana de cada hàbitat-itinerari amb tots els anys de caracterització.
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+#Promig de la densitat per habitat, itinerari i secció:
+cbms_densitat_sec<- aggregate(densitat ~ R20_ID + SPECIES + ITIN + SECC , 
+                          data = cbms_habitat, mean) %>%
+                    dplyr::mutate(
+                          ITIN = as.factor(ITIN)
+                    )
+
+#Densitat per hàbitat i itinerari (per a càlculs posteriors):
+cbms_densitat<- aggregate(densitat ~ R20_ID + SPECIES + ITIN, 
+                          data = cbms_densitat_sec, mean)
+
+```
+
+#### 3.3. PROMIG DE LA DENSITAT PER HABITAT SEGONS L'ITINERARI:
+
+##### (Afegir zeros a seccions i a itineraris)
+
+En una quarta fase, es tenen en compte tots els itineraris on apareix l'espècie, per a fer un càlcul de la seva densitat mitjana en cadascun dels 20 hàbitats en el conjunt de la xarxa del CBMS, és a dir del territori català. En aquest procés s'assigna una densitat de zero a aquells hàbitats on l'espècie no ha aparegut, de manera que finalment les densitats s'expressen en forma percentual per a un total fix de 20 hàbitats.
+
+Preparem la llista dels 20 hàbitats per secció i itinerari:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+habitat_f1<-habitat %>% select(3:6) %>%
+  dplyr::mutate(
+    ITIN = as.factor(ITIN),
+    R20_ID = as.factor(R20_ID)
+)
+
+#Agafem només els hàbitats amb >25% COB:
+habitat_f2<-filter(habitat_f1,COB100>=25) %>%
+  select(1,2,4)
+
+habitat_secc<-unique(habitat_f2)
+
+#Afegim els zeros dels hàbitats restants:
+habitat_f3<-habitat %>% select(6)
+habitat_list<-unique(habitat_f3) %>% filter(R20_ID>1) %>%
+  mutate(
+    R20_ID = as.factor(R20_ID)
+  )
+```
+
+## SSI I CÀLCUL DE PREFERÈNCIES
+
+### 4- CÀLCUL DEL SSI PER ESPÈCIE:
+
+El càlcul de l'índex d'especialització d'hàbitats (SSI) es fa com el coeficient de variació (CV = desviació estàndard/mitjana) de la distribució de les densitats (expressades en percentatge) en els 20 hàbitats.
+
+Per a aquest càlcul cal tractar les dades de cada espècie per separat. Crearem una llista on anar posant els resultats de SSI:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+SSI<-data.frame(matrix(ncol=1))
+names(SSI)=c("SSISP")
+
+levels<-aggregate(densitat~SPECIES, data=cbms_densitat_sec, mean)
+```
+
+Dins del càlcul eliminarem les dades d'un tipus d'hàbitat determinat quan aquest hàbitat només apareix en un sol itinerari. Amb aquests llindars s'aconsegueix reduir les associacions poc realistes entre espècies de papallones i determinats hàbitats.
+
+També afegirem els zeros mencionats anteriorment a les densitats concretes per a cada espècie:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+# Llista buida per guardar els SSI
+SSI <- list()
+
+# Llista d'espècies
+levels <- unique(cbms_densitat_sec$SPECIES)
+
+for(i in levels){
+
+  # 1) Filtrar dades de l'espècie
+  esp_densitat <- cbms_densitat %>% 
+    filter(SPECIES == i)
+
+  # 2) Comptar en quants itineraris apareix cada hàbitat R20_ID
+  freq_hab <- esp_densitat %>%
+    group_by(R20_ID) %>%
+    summarise(n_itin = n_distinct(ITIN), .groups = "drop")
+
+  # 3) Seleccionar només els hàbitats que apareixen en >= 2 itineraris
+  hab_valids <- freq_hab %>% 
+    filter(n_itin >= 2) %>% 
+    pull(R20_ID)
+
+  # 4) Dades per secció de l'espècie
+  esp_prev <- cbms_densitat_sec %>% 
+    filter(SPECIES == i) %>% 
+    select(ITIN, SECC, R20_ID, densitat)
+
+  # 5) Afegir zero-dades per seccions/hàbitats que falten
+  esp_zeros <- esp_prev %>%
+    full_join(habitat_secc, by = c("ITIN","SECC","R20_ID")) %>%
+    replace_na(list(densitat = 0)) %>%
+    group_by(R20_ID, ITIN) %>%
+    summarise(densitat = mean(densitat), .groups = "drop")
+
+  # 6) Mantenir només hàbitats vàlids
+  especie <- esp_zeros %>%
+    filter(R20_ID %in% hab_valids)
+
+  # 7) Densitat mitjana per hàbitat
+  esp_SSI_pref <- especie %>%
+    group_by(R20_ID) %>%
+    summarise(densitat = mean(densitat), .groups = "drop")
+
+  # 8) Afegir tots els hàbitats restants (densitat = 0)
+  esp_SSI <- habitat_list %>%
+    select(R20_ID) %>%
+    left_join(esp_SSI_pref, by = "R20_ID") %>%
+    replace_na(list(densitat = 0))
+
+  # 9) Calcul del SSI
+  mu <- mean(esp_SSI$densitat)
+  if(mu == 0){
+    SSI[[i]] <- 0   # Si no hi ha densitat, SSI = 0
+  } else {
+    sdv <- sd(esp_SSI$densitat)
+    SSI[[i]] <- sdv / mu
+  }
+}
+
+# Opcional: convertir la llista a dataframe
+SSI_df <- data.frame(
+  SPECIES = names(SSI),
+  SSI = unlist(SSI)
+)
+
+# Afegir el nombre total d'itineraris on s'ha vist cada espècie
+n_itin_df <- cbms_densitat %>%
+  group_by(SPECIES) %>%
+  summarise(n_ITIN = n_distinct(ITIN), .groups = "drop")
+
+# Merge amb SSI
+SSI_df <- SSI_df %>%
+  left_join(n_itin_df, by = "SPECIES")
+
+# Filtrar espècies que continguin "sp."
+SSI_df <- SSI_df %>%
+  filter(!grepl("sp\\.", SPECIES, ignore.case = TRUE))
+
+# Resultat final
+SSI_df
+SSI_df<-merge(SSI_df, names_CBMS, by="SPECIES")
+#Exportar taula final. Finalment obtenim els resultats en el document "SSI_2021.txt":
+write.table(SSI_df,"./results/SSI_2025.txt",sep=";", row.names=F)
+write.csv(SSI_df,"./results/SSI_2025.csv",sep=";", row.names=F)
+write.xlsx(SSI_df,"./results/SSI_2025.xlsx", row.names=F)
+```
+
+Quan més especialista és una espècie, més heterogènia és la distribució de les densitats i més alt és el SSI. Contràriament, les espècies generalistes tenen densitats similars entre molts hàbitats i, per tant, el seu SSI és baix.
+
+Cal tenir en compte que els valors de preferència d'hàbitat encara poden presentar biaixos deguts a la mida de la mostra emprada La qualitat de les dades augmenta, doncs, a mesura que les sèries temporals dels itineraris són més llargues, i quantes més estacions hi ha disponibles per a una determinada espècie.
+
+### 5- CÀLCUL DE LES PREFERÈNCIES D'HÀBITAT DE CADA ESPÈCIE:
+
+Els valors de preferències mostren la distribució de tots els individus d'una espècie detectats al CBMS entre les 20 categories d'hàbitats. Quan una espècie té una preferència molt acusada per un hàbitat concret, la majoria dels exemplars apareixen lligats a aquest hàbitat, mentre que els percentatges d'aparició a la resta dels hàbitats són molt baixos.
+
+En canvi, els percentatges de les aparicions queden molt més repartits entre les diferents categories quan una espècie és generalista.
+
+Preparem la base de dades:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+esp_pref <- data.frame("R20_ID" = 0, "SPECIES" = 0, "densitat" = 0, "percentatge" =  0) %>% 
+  dplyr::mutate(
+    R20_ID = as.factor(R20_ID),
+    SPECIES = as.factor (SPECIES),
+    densitat = as.numeric (densitat),
+    percentatge = as.numeric(percentatge)
+  )
+```
+
+Càlculs per espècie:
+
+```{r,message=FALSE,warning=FALSE,error=FALSE}
+library(dplyr)
+library(tidyr)
+
+# Inicialitzar la taula buida
+esp_pref <- data.frame(
+  R20_ID = factor(),
+  SPECIES = factor(),
+  densitat = numeric(),
+  percentatge = numeric()
+)
+
+levels <- unique(cbms_densitat_sec$SPECIES)
+
+for(i in levels){
+
+  # Filtrar dades de l'espècie
+  esp_densitat <- cbms_densitat %>% 
+    filter(SPECIES == i)
+
+  # Comptar quants R20_ID apareixen per itinerari
+  count1hab <- esp_densitat %>%
+    group_by(R20_ID) %>%
+    summarise(n_Itin = n_distinct(ITIN), .groups = "drop")
+
+  # Seleccionar només hàbitats amb més d'un itinerari
+  hab_valids <- count1hab %>% filter(n_Itin > 1) %>% pull(R20_ID)
+
+  # Dades per secció
+  esp_prev <- cbms_densitat_sec %>% 
+    filter(SPECIES == i)
+
+  esp_zeros <- esp_prev %>%
+    full_join(habitat_secc, by = c("ITIN", "SECC", "R20_ID")) %>%
+    replace_na(list(densitat = 0)) %>%
+    group_by(R20_ID, ITIN, SPECIES) %>%
+    summarise(densitat = mean(densitat), .groups = "drop")
+
+  # Mantenir només hàbitats vàlids
+  especie <- esp_zeros %>% filter(R20_ID %in% hab_valids)
+
+  # Càlcul de preferències
+  esp_SSI_pref1 <- especie %>%
+    group_by(SPECIES, R20_ID) %>%
+    summarise(densitat = mean(densitat), .groups = "drop") %>%
+    mutate(percentatge = (densitat / sum(densitat)) * 100)
+
+  # Afegir tots els hàbitats restants (densitat=0)
+  esp_SSI_pref <- habitat_list %>%
+    select(R20_ID) %>%
+    left_join(esp_SSI_pref1, by = "R20_ID") %>%
+    mutate(SPECIES = i) %>%
+    replace_na(list(densitat = 0, percentatge = 0))
+
+  # Afegir a la taula final
+  esp_pref <- bind_rows(esp_pref, esp_SSI_pref)
+}
+
+# Revisió final
+str(esp_pref)
+head(esp_pref)
+
+habitat_f4<-hab2 %>% select (7,8)
+names(habitat_f4)=c("R20_ID", "R20_DS")
+habitat_f4<-unique(habitat_f4)
+habitat_f4<-habitat_f4[-1,]
+esp_pref<-merge(habitat_f4, esp_pref, by = "R20_ID")
+
+write.table(esp_pref,"./results/pref_2025.txt",sep=";", row.names=F)
+write.csv(esp_pref,"./results/pref_2025.csv", row.names=F)
+write.xlsx(esp_pref,"./results/pref_2025.xlsx", row.names=F)
+
+esp_pref<-merge(esp_pref, names_CBMS, by="SPECIES")
+
+```
+
+![](./images/preferencies.jpg){width="30%"}
+
+------------------------------------------------------------------------
