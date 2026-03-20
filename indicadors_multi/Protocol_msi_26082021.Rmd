@@ -1,0 +1,762 @@
+---
+title: "PROTOCOL PEL CÀLCUL D'INDICADORS MULTIESPECÍFICS"
+author: "Pla-Narbona, C., Ubach., A, Stefanescu, C."
+date: "26/08/2021"
+output:
+  html_document:
+    code_folding: hide
+  word_document: default
+---
+![](./input/images/logo museu.jpg){width=15%}
+![](./input/images/Logo_CBMS.png){width=15%}
+
+
+Els indicadors multiespecífics combinen les dades poblacionals d’un grup d’espècies característiques per conèixer el comportament de la biodiversitat en relació amb un cert ambient.
+
+S’han usat sovint durant les darreres dècades a nivell europeu, per exemple combinant les dades de programes de seguiment d'ocells i papallones. Concretament, l’indicador de papallones de prats de la UE cada any agrupa les dades de 12 espècies comunes per conèixer l'estat de conservació dels prats al conjunt d'Europa , i és un dels indicadors oficials de l’estat de la biodiversitat a la Unió Europea. Per a més informació consultar:
+
+[European Environment Agency. The European grassland butterfly indicator](https://www.eea.europa.eu/data-and-maps/figures/european-grassland-butterfly-indicator)
+
+Seguint aquesta filosofia s'han construït **3 indicadors d'hàbitat**, generals per al conjunt de Catalunya. Aquests indicadors combinen les dades de tendències de totes les espècies que han estat seleccionades com a representatives dels hàbitats concrets (forestal, prats, agrícola), sempre i quan hagin superat els criteris que permeten el càlcul de les seves tendències.
+
+Els [hàbitats originals del CBMS](https://www.catalanbms.org/ca/habitats/) que s'inclouen en els còmputs dels 3 indicadors són:
+
+(1) **FORESTAL**: tots els diferents tipus de bosc + matollar alt
+(2) **PRATS**: els tres tipus de prats + zones humides de muntanya + sense vegetació + matollar baix
+(3) **AGRÍCOLA**: conreus herbacis + fruiterars + ruderal
+
+Fem un càlcul de la tendència que segueix l'indicador.
+Les tendències apareixen classificades segons el pendent de la recta de regressió i el seu nivell de significació en les categories:
+
+* **Regressió forta**: declivi significatiu i amb més d’un 20% de canvi en un període de 20 anys.
+* **Regressió moderada**: declivi significatiu i amb menys d’un 20% de canvi en un període de 20 anys.
+* **Increment moderat**: augment significatiu i amb menys d’un 20% de canvi en un període de 20 anys.
+* **Increment fort**: augment significatiu i amb més d’un 20% de canvi en un període de 20 anys.
+* **Estable**: tendència no significativa amb intervals de confiança petits que permeten afirmar que hi hauria menys d’un 20% de canvi en un període de 20 anys.
+* **Incerta**: tendència no significativa i intervals de confiança prou grans com per considerar que la tendència podria suposar un canvi major que el 20% en un període de 20 anys.
+
+
+Per desenvolupar indicadors multiespecífics amb les dades del CBMS és necessària primer una selecció d’espècies. Aquesta es realitza usant les pròpies dades obtingudes als transsectes, que permeten tant el càlcul de les preferències d'hàbitat com de dos indicadors d’hàbitat de les espècies (l’indicador TAO per ambients Tancats i Oberts, i l'indicador SSI d'especialització dels hàbitat). Les preferències d'hàbitat es calculen a partir de les caracteritzacions de la vegetació que es realitzen als itineraris BMS cada 6 anys.
+
+Per a més informació adreceu-vos a:
+* Protocol de càlcul de l'indicador TAO
+* Protocol de càlcul de l'indicador SSI i les preferències d'hàbitat
+* Protocol de caracterització de la vegetació dels itineraris CBMS
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+rm(list=ls())
+
+library(rbms)
+library(xlsx)
+library(openxlsx)
+library(tidyverse)
+library(devtools)
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(Rcpp)
+library(reshape2)
+source("workshop_functions.R")
+
+````
+
+## SELECCIÓ D'ESPÈCIES
+
+Carreguem els paquets necessaris a R i obrim el directori. Creem un directori: multisps. Necessitem:
+
+* Taula TAO
+* Taula preferències d'hàbitat
+
+Que incorporem a la carpeta "input/tables". 
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+#Directori a carpeta input/tables
+TAO<-read.delim("./input/tables/TAO_2025.csv",sep=",") %>% select (1,2,3)
+
+````
+
+
+## CÀLCUL DELS INDICADORS MULTIESPECÍFICS (msi)
+
+### INDICADOR PONDERAT
+
+Carreguem els arxius RDS amb el bootstrap ja fet de les espècies seleccionades d'una carpeta i les seleccionem totes de cop
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+bms <- "CBMS"
+path_ <- "./input/tables/2025/cbms" 
+
+co_index <- map(list.files(path = path_, pattern = ".rds", full.names = TRUE), readRDS) %>% 
+  rbindlist()
+
+co_index<-co_index[!co_index$SPECIES %in% c("HES","PIE","LYC","PAP", "NYM","SAT","hespsp","hestsp","lyclsp","nymasp","nymlsp","nymmsp","piegsp","piepsp","pielsp","satesp","lycags", "lycasp", "sathsp"),]
+
+#Obtenim el collated index per a cadascun dels arxius 
+co_index[, BMS_ID := "CBMS"]
+
+co_index <- co_index[BMS_ID == bms]
+co_index
+#fem el càlcul dels logaritmes del co_index
+
+co_index[, LOGDENSITY:= log(COL_INDEX)/log(10)][, TRMOBS := LOGDENSITY - mean(LOGDENSITY) + 2, by = .(SPECIES, BOOTi)]
+````
+
+#### Global
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+
+#Càlcul de l'indicador
+msi <- produce_indicator0(co_index[BOOTi==0])
+msi
+
+  #fem també un bootstrap
+msi_boot <- produce_indicators_boot(co_index[BOOTi > 0])
+
+str(msi_boot)
+
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msi <- add_indicator_CI(msi, msi_boot)
+msi
+
+#gràfic
+
+# Variables
+trend <- msi_trend$TrendClass_lt
+taxa  <- 1 - msi_trend$rate_lt
+rate  <- msi_trend$rate_lt
+
+# Nombre d'anys del període
+N <- max(msi$year) - min(msi$year)
+
+# Canvi acumulat observat
+canvi_acumulat <- ((rate)^N - 1) * 100
+
+# Text per al subtítol
+subtitle_text <- paste0(
+  "Tendència: ", trend,
+  "   ·   Taxa anual: ", round((taxa)*100, 2), "% ",
+  "   ·   Canvi acumulat: ", round(canvi_acumulat, 1), "%"
+)
+
+# Gràfic
+g1 <- ggplot(msi, aes(year, indicator)) +
+  theme(text = element_text(size = 14)) +
+  geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1),
+              alpha = .2, fill = "#9efa57") +
+  geom_point(color = "#55a816") +
+  geom_line(aes(y = SMOOTH), color = "#55a816") +
+  ylim(c(0, max(200, max(msi$UPPsmooth1)))) +
+  ggtitle("Indicador global del CBMS basat en 162 espècies",
+          subtitle = subtitle_text) +
+  theme_classic()
+
+g1
+
+
+
+````
+
+#### Grassland
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+
+#PONDERAR
+TAO$TAOP<-TAO$TAO+1
+
+TAO$TAOF<-2-TAO$TAOP
+
+TAOP<-TAO
+#TAO
+#names(names_CBMS)<-c("IDesp", "SPECIES", "Cat")
+#names(TAOP)<-c("TAO", "n_Itin", "TAOP", "IDesp", "TAOF")
+#TAOP<-merge(TAOP, names_CBMS, by="IDesp")
+
+co_index2<-merge(co_index, TAOP, by="SPECIES")
+
+co_index2$TRM1<-co_index2$TRMOBS*co_index2$TAOP
+co_index2$TRM2<-co_index2$TRMOBS*co_index2$TAOF
+
+co_indext1<- co_index2[, c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRM1")]
+names(co_indext1)<-c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRMOBS")
+
+co_indext2<- co_index2[, c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRM2")]
+names(co_indext2)<-c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRMOBS")
+
+
+#Càlcul de l'indicador
+msiG <- produce_indicator0(co_indext1[BOOTi==0])
+msiG
+
+  #fem també un bootstrap
+msi_bootG <- produce_indicators_boot(co_indext1[BOOTi > 0])
+str(msi_bootG)
+
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msiG <- add_indicator_CI(msiG, msi_bootG)
+msiG
+
+#write.xlsx(msiF, "msi_nopein_F.xlsx")
+
+# escrivim l'indicador final
+
+
+
+g1<-ggplot(msiG, aes(year, indicator))+
+  theme(text = element_text(size = 14))+
+  geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1), alpha=.2, fill = "#9efa57")+
+  geom_point(color = "#55a816")+
+  geom_line(aes(y = SMOOTH), color = "#55a816")+
+  ylim(c(0, max(200,max(msi$UPPsmooth1))))+
+  ggtitle(paste("Indicador de prats del", bms, "basat en 143 espècies"))+
+  theme_classic()
+g1
+
+````
+
+#### Forest
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+#Càlcul de l'indicador
+msiF <- produce_indicator0(co_indext2[BOOTi==0])
+msiF
+
+#fem també un bootstrap
+msi_bootF <- produce_indicators_boot(co_indext2[BOOTi > 0])
+str(msi_bootF)
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msiF <- add_indicator_CI(msiF, msi_bootF)
+msiF
+
+g1<-ggplot(msiF, aes(year, indicator))+
+  theme(text = element_text(size = 14))+
+  geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1), alpha=.2, fill = "#9efa57")+
+  geom_point(color = "#55a816")+
+  geom_line(aes(y = SMOOTH), color = "#55a816")+
+  ylim(c(0, max(200,max(msi$UPPsmooth1))))+
+  ggtitle(paste("Indicador de prats del", bms, "basat en 144 espècies"))+
+  theme_classic()
+g1
+
+
+#tendencia
+msi_trend <- estimate_ind_trends(msi, msi_boot)
+msi_trend_grass <- estimate_ind_trends(msiG, msi_bootG)
+msi_trend_forest <- estimate_ind_trends(msiF, msi_bootF)
+msi_trend<-rbind(msi_trend, msi_trend_grass, msi_trend_forest)
+
+
+
+````
+
+#### Figura comparada
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+
+msifig<-merge(msiG, msiF, by="year")
+msifig<-merge(msi, msifig, by="year")
+
+# Crear el gráfico
+diff <- round(msifig$SMOOTH[nrow(msifig)] - msifig$SMOOTH[1])
+diff_x <- round(msifig$SMOOTH.x[nrow(msifig)] - msifig$SMOOTH.x[1])
+diff_y <- round(msifig$SMOOTH.y[nrow(msifig)] - msifig$SMOOTH.y[1])
+
+y_limits <- c(0, max(max(msifig$SMOOTH.x), max(msifig$SMOOTH.y)))
+
+g1 <- ggplot(msifig, aes(x = year)) +
+  geom_line(aes(y = SMOOTH, color = "No ponderat"), linetype = "dashed", size = 1) +
+  geom_line(aes(y = SMOOTH.x, color = "Prats"), linetype = "solid", size = 1) +
+  geom_line(aes(y = SMOOTH.y, color = "Boscos"), linetype = "solid", size = 1) +
+  geom_ribbon(aes(ymin = LOWsmooth1.x, ymax = UPPsmooth1.x), alpha = 0.2, fill = "#bec4e8", position = position_dodge(0.5)) +
+  geom_ribbon(aes(ymin = LOWsmooth1.y, ymax = UPPsmooth1.y), alpha = 0.2, fill = "#e8bebe", position = position_dodge(0.5)) +
+  geom_label(data = filter(msifig, year == 2022), aes(x = year, y = SMOOTH.x + 2, label = diff_x), 
+             color = "blue", size = 4, hjust = 0, vjust = 2) +  
+  geom_label(data = filter(msifig, year == 2022), aes(x = year, y = SMOOTH.y + 2, label = diff_y), 
+             color = "red", size = 4, hjust = 0, vjust = 0) +  
+  geom_label(data = filter(msifig, year == 2022), aes(x = year, y = SMOOTH + 2, label = diff), 
+             color = "grey", size = 4, hjust = 0, vjust = 0.5) +  
+  scale_color_manual(values = c("Prats" = "blue", "Boscos" = "red", "No ponderat"="grey")) +
+  scale_y_continuous(breaks = seq(0, max(msifig$UPPsmooth1.x, msifig$UPPsmooth1.y), by = 20)) +
+  labs(x = "Any",
+       y = "Indicador") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(color = "Tipus d'indicador") +
+  theme(axis.text.y = element_text(hjust = 1),
+        plot.margin = margin(1, 0.1, 1, 1, "cm"))+
+  xlim(range(msifig$year))  +
+  ggtitle("Indicador abundància CBMS")
+
+g1
+
+g1 <- ggplot(msifig, aes(x = year)) +
+  geom_line(aes(y = SMOOTH, color = "No ponderado"), linetype = "dashed", size = 1) +
+  geom_line(aes(y = SMOOTH.x, color = "Praderas"), linetype = "solid", size = 1) +
+  geom_line(aes(y = SMOOTH.y, color = "Bosques"), linetype = "solid", size = 1) +
+  geom_ribbon(aes(ymin = LOWsmooth1.x, ymax = UPPsmooth1.x), alpha = 0.2, fill = "#bec4e8", position = position_dodge(0.5)) +
+  geom_ribbon(aes(ymin = LOWsmooth1.y, ymax = UPPsmooth1.y), alpha = 0.2, fill = "#e8bebe", position = position_dodge(0.5)) +
+  geom_label(data = filter(msifig, year == 2022), aes(x = year, y = SMOOTH.x + 2, label = diff_x), 
+             color = "blue", size = 4, hjust = 0, vjust = 2) +  
+  geom_label(data = filter(msifig, year == 2022), aes(x = year, y = SMOOTH.y + 2, label = diff_y), 
+             color = "red", size = 4, hjust = 0, vjust = 0) +  
+  geom_label(data = filter(msifig, year == 2022), aes(x = year, y = SMOOTH + 2, label = diff), 
+             color = "grey", size = 4, hjust = 0, vjust = 0.5) +  
+  scale_color_manual(
+    values = c("Praderas" = "blue", "Bosques" = "red", "No ponderado" = "grey")
+  ) +
+  scale_y_continuous(breaks = seq(0, max(msifig$UPPsmooth1.x, msifig$UPPsmooth1.y), by = 20)) +
+  labs(x = "Any",
+       y = "Indicador",
+       color = "Tipo de indicador") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.y = element_text(hjust = 1),
+    plot.margin = margin(0, 0.1, 1, 1, "cm")
+  ) +
+  xlim(range(msifig$year)) +
+  ggtitle("Indicador abundancia España")
+
+g1
+
+ggsave("indicador_cbms.png", plot = g1,
+       width = 16, height = 11, units = "cm", dpi = 300)
+
+
+write.xlsx(msifig, "./output/msi_cbms.xlsx", overwrite=TRUE)
+
+write.xlsx(msi_trend, "./output/msi_cbms_trend.xlsx")
+write.csv(msi, "msi_global.csv", row.names = FALSE)
+write.csv(msiG, "msi_G.csv", row.names = FALSE)
+write.csv(msiF, "msi_F.csv", row.names = FALSE)
+
+````
+
+### INDICADOR EUROPEU
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+#### EUROPEAN
+
+co_european<-subset(co_index, SPECIES %in% c("hesove", "pieaca","lyclph", "lycpic", "satlme", "satcpa", "satmju", "heseta", "hestac", "hessse", "lyccmi", "lycmar", "lycpbe", "lycpse", "lycpco", "nymeau")) 
+
+GBI_european<-subset(co_index, SPECIES %in% c("Ochlodes sylvanus", "Anthocharis cardamines","Lycaena phlaeas", "Polyommatus icarus", "Lasiommata megera", "Coenonympha pamphilus", "Maniola jurtina", "Erynnis tages", "Thymelicus acteon", "Spialia sertorius", "Cupido minimus", "Phengaris arion", "Lysandra bellargus", "Cyaniris semiargus", "Lysandra coridon", "Euphydryas aurinia")) 
+
+co_euro<-merge(GBI_european, TAOP, by="SPECIES")
+co_euro$TRM1<-co_euro$TRMOBS*co_euro$TAOP
+co_euro$TRM2<-co_euro$TRMOBS*co_euro$TAOF
+
+
+#GRASSLAND
+co_europ<- co_euro[, c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRM1")]
+names(co_europ)<-c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRMOBS")
+
+#FORESTAL
+co_eurof<- co_euro[, c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRM2")]
+names(co_eurof)<-c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRMOBS")
+
+#Càlcul de l'indicador
+msie <- produce_indicator0(co_euro[BOOTi==0])
+msie
+
+#fem també un bootstrap
+msi_boote <- produce_indicators_boot(co_euro[BOOTi > 0])
+str(msi_boote)
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msie <- add_indicator_CI(msie, msi_boote)
+msie
+
+# EUROPEU PONDERAT GRASSLAND
+#Càlcul de l'indicador
+msiep <- produce_indicator0(co_europ[BOOTi==0])
+msiep
+
+#fem també un bootstrap
+msi_bootep <- produce_indicators_boot(co_europ[BOOTi > 0])
+str(msi_bootep)
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msiep <- add_indicator_CI(msiep, msi_bootep)
+msiep
+
+#FORESTAL EUROPEU
+msief <- produce_indicator0(co_eurof[BOOTi==0])
+msief
+
+#fem també un bootstrap
+msi_bootef <- produce_indicators_boot(co_eurof[BOOTi > 0])
+str(msi_bootef)
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msief <- add_indicator_CI(msief, msi_bootef)
+msief
+# escrivim l'indicador final
+
+write.csv(msie, "gbi_global.csv", row.names = FALSE)
+write.csv(msiep, "gbi_G.csv", row.names = FALSE)
+write.csv(msief, "gbi_F.csv", row.names = FALSE)
+
+
+#gràfic
+g1<-ggplot(msie, aes(year, indicator))+
+  theme(text = element_text(size = 14))+
+  geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1), alpha=.2, fill = "#9efa57")+
+  geom_point(color = "#55a816")+
+  geom_line(aes(y = SMOOTH), color = "#55a816")+
+  ylim(c(0, max(200,max(msi$UPPsmooth1))))+
+  ggtitle(paste("Indicador de prats del", bms, "basat en 144 espècies"))+
+  theme_classic()
+g1
+
+
+#tendencia
+msi_trend_e <- estimate_ind_trends(msie, msi_boote)
+msi_trend_ep <- estimate_ind_trends(msiep, msi_bootep)
+msi_trend_ef <- estimate_ind_trends(msief, msi_bootef)
+msi_trend_EURO<-rbind(msi_trend_e, msi_trend_ep, msi_trend_ef)
+````
+
+#### Figura comparada
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+msifig2<-merge(msiep, msief, by="year")
+msifig2<-merge(msie, msifig2, by="year")
+
+
+# Crear el gráfico
+diff2 <-round(msifig2$SMOOTH [nrow(msifig2)] - msifig2$SMOOTH [1])
+diff2_x <- round(msifig2$SMOOTH.x[nrow(msifig2)] - msifig2$SMOOTH.x[1])
+diff2_y <- round(msifig2$SMOOTH.y[nrow(msifig2)] - msifig2$SMOOTH.y[1])
+
+y_limits <- c(0, max(max(msifig2$SMOOTH.x), max(msifig2$SMOOTH.y)))
+
+
+g2 <- ggplot(msifig2, aes(x = year)) +
+  geom_line(aes(y = SMOOTH, color = "Non-weighted"), linetype = "dashed", size = 1) +
+  geom_line(aes(y = SMOOTH.x, color = "Grassland"), linetype = "solid", size = 1) +
+  geom_line(aes(y = SMOOTH.y, color = "Forest"), linetype = "solid", size = 1) +
+  geom_ribbon(aes(ymin = LOWsmooth1.x, ymax = UPPsmooth1.x), alpha = 0.2, fill = "#bec4e8", position = position_dodge(0.5)) +
+  geom_ribbon(aes(ymin = LOWsmooth1.y, ymax = UPPsmooth1.y), alpha = 0.2, fill = "#e8bebe", position = position_dodge(0.5)) +
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH.x + 2, label = diff2_x), 
+             color = "blue", size = 4, hjust = 0, vjust = 0) +  
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH.y + 2, label = diff2_y), 
+             color = "red", size = 4, hjust = 0, vjust = 0) +  
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH + 2, label = diff2), 
+             color = "grey", size = 4, hjust = 0, vjust = 0) +  
+  scale_color_manual(values = c("Grassland" = "blue", "Forest" = "red", "Non-weighted" = "grey")) +
+  scale_y_continuous(breaks = seq(0, max(msifig2$UPPsmooth1.x, msifig2$UPPsmooth1.y), by = 20)) +
+  labs(x = "Year",
+       y = "Indicator") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(color = "MSI Type") +
+  theme(axis.text.y = element_text(hjust = 1),
+        plot.margin = margin(1, 0.1, 1, 1, "cm")) +
+  xlim(range(msifig2$year)) +
+  ggtitle("GBI subset species (n=15)")
+
+g2
+
+
+
+
+library(ggpubr)
+gtot<-ggarrange(g1,g2, ncol = 1, common.legend = TRUE, legend="bottom", labels = c("a)", "b)"))
+gtot
+
+gtot<-ggsave(path="./output/", "msiTOT.png",  width = 8, height = 11 )
+
+
+````
+
+### INDICADOR regions climàtiques
+
+Carreguem els arxius RDS amb el bootstrap ja fet de les espècies seleccionades d'una carpeta i les seleccionem totes de cop
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+
+g1<-ggplot(msifig2, aes(x = year)) +
+  geom_line(aes(y = SMOOTH, color = "Non Pondered"), linetype = "solid", size = 1) +
+  geom_line(aes(y = SMOOTH.x, color = "Pondered"), linetype = "solid", size = 1) +
+    geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1), alpha = 0.2, fill = "#bec4e8", position = position_dodge(0.5)) +
+   geom_ribbon(aes(ymin = LOWsmooth1.x, ymax = UPPsmooth1.x), alpha = 0.2, fill = "#e8bebe", position = position_dodge(0.5)) +
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH , label = diff), 
+             color = "blue", size = 4, hjust = 0, vjust = 0) +  
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH.x , label = diff_x), 
+             color = "red", size = 4, hjust = 0, vjust = +2) + 
+  scale_color_manual(values = c("Non Pondered" = "blue", "Pondered" = "red")) +
+  labs(title = "EBG species in CBMS",
+       x = "Year",
+       y = "Value") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(color = "MSI Type") +
+  theme(axis.text.y = element_text(hjust = 1),
+        plot.margin = margin(1, 0.1, 1, 1, "cm"))+
+  xlim(range(msifig2$year))  #  # Ajuste del área de trazado
+
+g1
+
+g1<-ggsave(path="./output/", "msi_european.png", height= 5, width= 8)
+g1 <- ggplot(msifig2, aes(x = year)) +
+  geom_line(aes(y = SMOOTH, color = "All"), linetype = "dashed", size = 1) +
+  geom_line(aes(y = SMOOTH.x, color = "Grassland"), linetype = "solid", size = 1) +
+  geom_line(aes(y = SMOOTH.y, color = "Forest"), linetype = "solid", size = 1) +
+  geom_ribbon(aes(ymin = LOWsmooth1.x, ymax = UPPsmooth1.x), alpha = 0.2, fill = "#bec4e8", position = position_dodge(0.5)) +
+  geom_ribbon(aes(ymin = LOWsmooth1.y, ymax = UPPsmooth1.y), alpha = 0.2, fill = "#e8bebe", position = position_dodge(0.5)) +
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH.x + 2, label = diff_x), 
+             color = "blue", size = 4, hjust = 0, vjust = 0) +  
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH.y + 2, label = diff_y), 
+             color = "red", size = 4, hjust = 0, vjust = 0) +  
+  geom_label(data = filter(msifig2, year == 2022), aes(x = year, y = SMOOTH + 2, label = diff), 
+             color = "grey", size = 4, hjust = 0, vjust = 0) +  
+  scale_color_manual(values = c("Grassland" = "blue", "Forest" = "red", "All"="grey")) +
+  scale_y_continuous(breaks = seq(0, max(msifig2$UPPsmooth1.x, msifig2$UPPsmooth1.y), by = 20)) +
+  labs(x = "Year",
+       y = "Indicator") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(color = "MSI Type") +
+  theme(axis.text.y = element_text(hjust = 1),
+        plot.margin = margin(1, 0.1, 1, 1, "cm"))+
+  xlim(range(msifig2$year))  #
+
+g1
+
+
+
+
+bms <- "CBMS"
+path_ <- "./input/tables/global/2023/r1" 
+
+co_indexr1 <- map(list.files(path = path_, pattern = ".rds", full.names = TRUE), readRDS) %>% 
+  rbindlist()
+
+#Obtenim el collated index per a cadascun dels arxius 
+co_indexr1 <- co_indexr1[BMS_ID == bms]
+co_indexr1
+#fem el càlcul dels logaritmes del co_index
+
+co_indexr1[, LOGDENSITY:= log(COL_INDEX)/log(10)][, TRMOBS := LOGDENSITY - mean(LOGDENSITY) + 2, by = .(SPECIES, BOOTi)]
+
+TAOP$SPECIES<-TAOP$IDesp
+TAOP$IDesp <- NULL
+
+TAOP$TAOF<-2-TAOP$TAOP
+#TAO
+co_indexr1<-merge(co_indexr1, TAOP, by="SPECIES")
+co_indexr1$TRM1<-co_indexr1$TRMOBS*co_indexr1$TAOP
+
+co_indexr1<- co_indexr1[, c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRM1")]
+names(co_indexr1)<-c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRMOBS")
+
+#Càlcul de l'indicador
+msir1 <- produce_indicator0(co_indexr1[BOOTi==0])
+msir1
+
+#fem també un bootstrap
+msi_bootr1 <- produce_indicators_boot(co_indexr1[BOOTi > 0])
+str(msi_bootr1)
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msir1 <- add_indicator_CI(msir1, msi_bootr1)
+msir1
+
+# escrivim l'indicador final
+#gràfic
+g1<-ggplot(msir1, aes(year, indicator))+
+  theme(text = element_text(size = 14))+
+  geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1), alpha=.2, fill = "#bec4e8")+
+  geom_point(color = "blue")+
+  geom_line(aes(y = SMOOTH), color = "blue")+
+  ylim(c(0, max(200,max(msir1$UPPsmooth1))))+
+  ggtitle(paste("Subalpine grassland ind. (97 sp)"))+
+  theme_classic()
+g1
+
+bms <- "CBMS"
+path_ <- "./input/tables/global/2023/r2" 
+
+co_indexr2 <- map(list.files(path = path_, pattern = ".rds", full.names = TRUE), readRDS) %>% 
+  rbindlist()
+
+#Obtenim el collated index per a cadascun dels arxius 
+co_indexr2 <- co_indexr2[BMS_ID == bms]
+co_indexr2
+#fem el càlcul dels logaritmes del co_index
+
+co_indexr2[, LOGDENSITY:= log(COL_INDEX)/log(10)][, TRMOBS := LOGDENSITY - mean(LOGDENSITY) + 2, by = .(SPECIES, BOOTi)]
+
+#TAO
+co_indexr2<-merge(co_indexr2, TAOP, by="SPECIES")
+co_indexr2$TRM1<-co_indexr2$TRMOBS*co_indexr2$TAOP
+
+co_indexr2<- co_indexr2[, c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRM1")]
+names(co_indexr2)<-c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRMOBS")
+
+#Càlcul de l'indicador
+msir2 <- produce_indicator0(co_indexr2[BOOTi==0])
+msir2
+
+#fem també un bootstrap
+msi_bootr2 <- produce_indicators_boot(co_indexr2[BOOTi > 0])
+str(msi_bootr2)
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msir2 <- add_indicator_CI(msir2, msi_bootr2)
+msir2
+
+# escrivim l'indicador final
+#gràfic
+g2<-ggplot(msir2, aes(year, indicator))+
+  theme(text = element_text(size = 14))+
+  geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1), alpha=.2, fill = "#bec4e8")+
+  geom_point(color = "blue")+
+  geom_line(aes(y = SMOOTH), color = "blue")+
+  ylim(c(0, max(200,max(msir2$UPPsmooth1))))+
+  ggtitle(paste("Mesic grassland ind. (108 sp)"))+
+  theme_classic()
+g2
+
+bms <- "CBMS"
+path_ <- "./input/tables/global/2023/r3" 
+
+co_indexr3 <- map(list.files(path = path_, pattern = ".rds", full.names = TRUE), readRDS) %>% 
+  rbindlist()
+
+#Obtenim el collated index per a cadascun dels arxius 
+co_indexr3 <- co_indexr3[BMS_ID == bms]
+co_indexr3
+#fem el càlcul dels logaritmes del co_index
+
+co_indexr3[, LOGDENSITY:= log(COL_INDEX)/log(10)][, TRMOBS := LOGDENSITY - mean(LOGDENSITY) + 2, by = .(SPECIES, BOOTi)]
+
+#TAO
+co_indexr3<-merge(co_indexr3, TAOP, by="SPECIES")
+co_indexr3$TRM1<-co_indexr3$TRMOBS*co_indexr3$TAOP
+
+co_indexr3<- co_indexr3[, c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRM1")]
+names(co_indexr3)<-c("SPECIES", "BOOTi", "M_YEAR","NSITE", "NSITE_B", "NSITE_OBS","COL_INDEX", "BMS_ID", "LOGDENSITY","TRMOBS")
+
+co_indexr3<-filter(co_indexr3,M_YEAR!="1994")
+
+#Càlcul de l'indicador
+msir3 <- produce_indicator0(co_indexr3[BOOTi==0])
+msir3
+
+#fem també un bootstrap
+msi_bootr3 <- produce_indicators_boot(co_indexr3[BOOTi > 0])
+str(msi_bootr3)
+
+#Afegim els intervals de confiança obtinguts amb el mètode boostrap
+msir3 <- add_indicator_CI(msir3, msi_bootr3)
+msir3
+
+# escrivim l'indicador final
+#gràfic
+g3<-ggplot(msir3, aes(year, indicator))+
+  theme(text = element_text(size = 14))+
+  geom_ribbon(aes(ymin = LOWsmooth1, ymax = UPPsmooth1), alpha=.2, fill = "#bec4e8")+
+  geom_point(color = "blue")+
+  geom_line(aes(y = SMOOTH), color = "blue")+
+  ylim(c(0, max(200,max(msir3$UPPsmooth1))))+
+  ggtitle(paste("Arid grassland ind. (32 sp)"))+
+  theme_classic()
+g3
+
+library(ggpubr)
+gtot<-ggarrange (g1,g2,g3, nrow=3, common.legend=TRUE)
+gtot
+gtot<-ggsave(path="./output/", "msi_clima.png", width = 3.5, height = 7 )
+
+
+msi_trend_r1 <- estimate_ind_trends(msir1, msi_bootr1)
+msi_trend_r2 <- estimate_ind_trends(msir2, msi_bootr2)
+msi_trend_r3 <- estimate_ind_trends(msir3, msi_bootr3)
+msi_trend<-rbind(msi_trend_r1, msi_trend_r2, msi_trend_r3)
+
+write.xlsx(msi_trend, "msi_trend.xlsx")
+write.xlsx(msifig, "./output/msi_GF.xlsx", overwrite=TRUE)
+
+
+````
+
+Unim les tendències en un sol arxiu
+
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+msi_trend_forest$msi_type<-"forest"
+msi_trend_grass$msi_type<-"grassland"
+msi_trend_agro$msi_type<-"agricultural"
+
+msi_trends<-rbind(msi_trend_forest,msi_trend_grass, msi_trend_agro)
+
+write.xlsx(msi_trends, "./output/msi_trends.xlsx", , overwrite=TRUE)
+````
+***
+
+msifig <- merge(msiG, msiF, by="year")
+msifig <- merge(msi, msifig, by="year")
+
+# Diferències
+```{r,message = FALSE, warning=FALSE, error= FALSE}
+msifig<-merge(msiG, msiF, by="year")
+msifig<-merge(msi, msifig, by="year")
+diff <- round(msifig$SMOOTH[nrow(msifig)] - msifig$SMOOTH[1])
+diff_x <- round(msifig$SMOOTH.x[nrow(msifig)] - msifig$SMOOTH.x[1])
+diff_y <- round(msifig$SMOOTH.y[nrow(msifig)] - msifig$SMOOTH.y[1])
+
+g1 <- ggplot(msifig, aes(x = year)) +
+  
+  # Línies
+  geom_line(aes(y = SMOOTH, color = "No ponderat"),
+            linetype = "dashed", size = 1) +
+  
+  geom_line(aes(y = SMOOTH.x, color = "Prats"),
+            linetype = "solid", size = 1) +
+  
+  geom_line(aes(y = SMOOTH.y, color = "Boscos"),
+            linetype = "solid", size = 1) +
+  
+  # Etiquetes finals (2022)
+  geom_label(data = subset(msifig, year == 2022),
+             aes(y = SMOOTH.x, label = diff_x),
+             color = "blue", size = 4, hjust = 0, nudge_x = 0.5) +
+  
+  geom_label(data = subset(msifig, year == 2022),
+             aes(y = SMOOTH.y, label = diff_y),
+             color = "red", size = 4, hjust = 0, nudge_x = 0.5) +
+  
+  geom_label(data = subset(msifig, year == 2022),
+             aes(y = SMOOTH, label = diff),
+             color = "grey40", size = 4, hjust = 0, nudge_x = 0.5) +
+  
+  scale_color_manual(values = c("Prats" = "blue",
+                                "Boscos" = "red",
+                                "No ponderat" = "grey40")) +
+  
+  scale_y_continuous(breaks = seq(0,
+                                  max(msifig$SMOOTH,
+                                      msifig$SMOOTH.x,
+                                      msifig$SMOOTH.y,
+                                      na.rm = TRUE),
+                                  by = 20)) +
+  
+  labs(x = "Any",
+       y = "Indicador",
+       color = "Tipus d'indicador",
+       title = "Indicador abundància DIBA") +
+  
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        axis.text.y = element_text(hjust = 1),
+        plot.margin = margin(1, 0.1, 1, 1, "cm")) +
+  
+  xlim(range(msifig$year))
+
+g1
+
+ggsave("indicador_diba.png", plot = g1,
+       width = 16, height = 11, units = "cm", dpi = 300)
+
+
+````
